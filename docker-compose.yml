@@ -4,59 +4,59 @@ services:
   auth-db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: authuser
+      POSTGRES_USER:     authuser
       POSTGRES_PASSWORD: authpass
-      POSTGRES_DB: authdb
+      POSTGRES_DB:       authdb       
     volumes:
       - auth-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U authuser"]
+      test: ["CMD-SHELL", "pg_isready -U authuser -d authdb"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   app-db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: appuser
+      POSTGRES_USER:     appuser
       POSTGRES_PASSWORD: apppass
-      POSTGRES_DB: appdb
+      POSTGRES_DB:       appdb         # ← base de données = appdb
     volumes:
       - app-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U appuser"]
+      test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   auth-service:
     build: ./services/auth-service
     environment:
-      DATABASE_URL: postgresql://authuser:authpass@auth-db:5432/authdb
-      JWT_SECRET_KEY: dev-secret-change-in-prod
+      DATABASE_URL:    postgresql://authuser:authpass@auth-db:5432/authdb
+      JWT_SECRET_KEY:  dev-secret-change-in-prod
     depends_on:
       auth-db:
         condition: service_healthy
     ports:
       - "8001:8001"
+    restart: on-failure
 
   app-service:
     build: ./services/app-service
     environment:
-      DATABASE_URL: postgresql://appuser:apppass@app-db:5432/appdb
-      JWT_SECRET_KEY: dev-secret-change-in-prod
+      DATABASE_URL:    postgresql://appuser:apppass@app-db:5432/appdb
+      JWT_SECRET_KEY:  dev-secret-change-in-prod
     depends_on:
       app-db:
         condition: service_healthy
-      auth-service:
-        condition: service_started
     ports:
       - "8002:8002"
+    restart: on-failure
 
   file-service:
     build: ./services/file-service
     environment:
-      JWT_SECRET_KEY: dev-secret-change-in-prod
+      JWT_SECRET_KEY:  dev-secret-change-in-prod
     ports:
       - "8003:8003"
     volumes:
@@ -72,6 +72,7 @@ services:
       - auth-service
       - app-service
       - file-service
+    restart: on-failure
 
 volumes:
   auth-db-data:

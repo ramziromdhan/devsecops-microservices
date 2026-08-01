@@ -8,26 +8,41 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from pydantic import BaseModel, EmailStr
-import os, socket
+import os, socket, time
 
-# ── Config ──────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://authuser:authpass@auth-db:5432/authdb")
 SECRET_KEY   = os.getenv("JWT_SECRET_KEY", "changeme-in-production-use-vault")
 ALGORITHM    = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# ── Database ─────────────────────────────────────────────────────
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
-    id            = Column(Integer, primary_key=True, index=True)
-    email         = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-    is_active     = Column(Boolean, default=True)
-    created_at    = Column(DateTime, default=datetime.utcnow)
+    id               = Column(Integer, primary_key=True, index=True)
+    email            = Column(String, unique=True, index=True)
+    hashed_password  = Column(String)
+    is_active        = Column(Boolean, default=True)
+    created_at       = Column(DateTime, default=datetime.utcnow)
+
+# ── App ───────────────────────────────────────────────────────────
+app = FastAPI(title="Auth Service", version="1.0.0")
+
+@app.on_event("startup")
+def startup():
+    """Connexion DB avec retry — attend que PostgreSQL soit prêt."""
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            Base.metadata.create_all(bind=engine)
+            print(f"✅ Database connected on attempt {attempt + 1}")
+            return
+        except Exception as e:
+            print(f"⏳ DB not ready (attempt {attempt + 1}/{max_retries}): {e}")
+            time.sleep(3)
+    raise RuntimeError("❌ Could not connect to database after multiple retries")
 
 Base.metadata.create_all(bind=engine)
 
