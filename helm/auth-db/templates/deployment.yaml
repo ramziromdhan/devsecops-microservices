@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-db
+  namespace: devsecops-prod
+  labels:
+    app: auth-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-db
+  template:
+    metadata:
+      labels:
+        app: auth-db
+    spec:
+      automountServiceAccountToken: false
+      # PostgreSQL gère ses propres permissions — pas de runAsNonRoot ici
+      # L'image postgres:alpine tourne avec l'utilisateur 'postgres' (UID 70 sur Alpine)
+      securityContext:
+        fsGroup: 70
+      containers:
+        - name: postgres
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: auth-db-secret
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "authuser", "-d", "authdb"]
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "authuser", "-d", "authdb"]
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: postgres
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: auth-db-pvc

@@ -1,0 +1,17 @@
+replicaCount: 1
+
+image:
+  repository: nginx
+  tag: "alpine"
+  pullPolicy: IfNotPresent
+
+service:
+  nodePort: 30080
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "128Mi"

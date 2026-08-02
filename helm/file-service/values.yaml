@@ -1,0 +1,17 @@
+replicaCount: 1
+
+image:
+  repository: file-service
+  tag: "1.0.0"
+  pullPolicy: Never
+
+service:
+  port: 8003
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"

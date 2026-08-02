@@ -60,7 +60,7 @@ services:
     ports:
       - "8003:8003"
     volumes:
-      - /tmp/uploads:/tmp/uploads
+      - uploads-data:/tmp/uploads
 
   gateway:
     image: nginx:alpine
@@ -77,3 +77,4 @@ services:
 volumes:
   auth-db-data:
   app-db-data:
+  uploads-data:
