@@ -1,0 +1,19 @@
+=== Tests SSRF sur file-service ===
+Test 1: Path traversal via filename
+{
+    "detail": "Extension  not allowed"
+}
+Test 2: Double extension
+{
+    "filename": "a6396f891eea8fc2536e6ddb00fb30581c20ab6312ffc9d2c89555d44b93befb.txt",
+    "size": 23,
+    "hash": "a6396f891eea8fc2536e6ddb00fb30581c20ab6312ffc9d2c89555d44b93befb",
+    "uploaded_by": "ramzi@linsoft.tn"
+}
+Test 3: Oversized file (11MB)
+Expecting value: line 1 column 1 (char 0)
+Test 4: Null byte injection
+Expecting value: line 1 column 1 (char 0)
+Test 5: Upload sans auth
+Expecting value: line 1 column 1 (char 0)
+=== Tests terminés ===

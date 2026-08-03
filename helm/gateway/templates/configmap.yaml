@@ -5,6 +5,7 @@ metadata:
   namespace: devsecops-prod
 data:
   default.conf: |
+    server_tokens off;
     limit_req_zone $binary_remote_addr zone=api:10m rate=30r/m;
 
     server {
@@ -15,9 +16,11 @@ data:
 
         limit_req zone=api burst=10 nodelay;
 
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-XSS-Protection "1; mode=block" always;
+        # Headers appliqués globalement à TOUTES les réponses
+        add_header X-Frame-Options         "DENY"                            always;
+        add_header X-Content-Type-Options  "nosniff"                         always;
+        add_header X-XSS-Protection        "1; mode=block"                   always;
+        add_header Referrer-Policy         "strict-origin-when-cross-origin" always;
 
         location /auth/ {
             set $auth http://auth-service.devsecops-prod.svc.cluster.local:8001;
@@ -30,6 +33,7 @@ data:
             set $app http://app-service.devsecops-prod.svc.cluster.local:8002;
             proxy_pass $app;
             proxy_set_header Authorization $http_authorization;
+            proxy_set_header Host $host;
         }
 
         location /upload {
@@ -40,7 +44,10 @@ data:
         }
 
         location /health {
+            add_header X-Frame-Options        "DENY"    always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection       "1; mode=block" always;
+            add_header Content-Type           "application/json";
             return 200 '{"status":"ok","service":"gateway"}';
-            add_header Content-Type application/json;
         }
     }
