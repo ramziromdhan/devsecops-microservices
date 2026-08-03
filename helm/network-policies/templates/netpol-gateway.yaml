@@ -1,0 +1,42 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netpol-gateway
+  namespace: devsecops-prod
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - {}                          # accepte tout (trafic externe)
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: auth-service
+      ports:
+        - port: 8001
+    - to:
+        - podSelector:
+            matchLabels:
+              app: app-service
+      ports:
+        - port: 8002
+    - to:
+        - podSelector:
+            matchLabels:
+              app: file-service
+      ports:
+        - port: 8003
+    - to:                         # DNS k3s
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

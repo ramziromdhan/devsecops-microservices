@@ -17,3 +17,4 @@ semgrep-report.json
 kubesec-report.json
 hadolint-report.sarif
 /tmp/
+.secrets.env

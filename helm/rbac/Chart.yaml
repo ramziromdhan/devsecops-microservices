@@ -1,0 +1,5 @@
+apiVersion: v2
+name: rbac
+description: RBAC et ServiceAccounts pour les microservices
+type: application
+version: 0.1.0
