@@ -18,3 +18,12 @@ kubesec-report.json
 hadolint-report.sarif
 /tmp/
 .secrets.env
+
+# Security test artifacts and reports
+tests/security/results/
+tests/security/sqlmap-results/
+tests/security/zap-results/
+tests/security/*-results.txt
+*.sqlite
+*.html
+*.json

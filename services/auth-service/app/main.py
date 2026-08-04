@@ -27,13 +27,14 @@ class User(Base):
     is_active        = Column(Boolean, default=True)
     created_at       = Column(DateTime, default=datetime.utcnow)
 
-# ── App ───────────────────────────────────────────────────────────
+# 1. Déclaration UNIQUE de l'application FastAPI
 app = FastAPI(title="Auth Service", version="1.0.0")
 
+# 2. Gestionnaire de démarrage avec Retry (Seul endroit où create_all est appelé)
 @app.on_event("startup")
 def startup():
     """Connexion DB avec retry — attend que PostgreSQL soit prêt."""
-    max_retries = 10
+    max_retries = 15
     for attempt in range(max_retries):
         try:
             Base.metadata.create_all(bind=engine)
@@ -41,10 +42,8 @@ def startup():
             return
         except Exception as e:
             print(f"⏳ DB not ready (attempt {attempt + 1}/{max_retries}): {e}")
-            time.sleep(3)
+            time.sleep(5)
     raise RuntimeError("❌ Could not connect to database after multiple retries")
-
-Base.metadata.create_all(bind=engine)
 
 # ── Auth utils ────────────────────────────────────────────────────
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -96,9 +95,7 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
-# ── App ───────────────────────────────────────────────────────────
-app = FastAPI(title="Auth Service", version="1.0.0")
-
+# ── Middleware & Routes ────────────────────────────────────────────
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)

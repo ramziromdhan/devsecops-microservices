@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from jose import JWTError, jwt
 from datetime import datetime
 from pydantic import BaseModel
-import os, socket
+import os, socket, time
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://appuser:apppass@app-db:5432/appdb")
 SECRET_KEY   = os.getenv("JWT_SECRET_KEY", "changeme-in-production-use-vault")
@@ -23,8 +23,6 @@ class Item(Base):
     description = Column(Text)
     owner_email = Column(String, index=True)
     created_at  = Column(DateTime, default=datetime.utcnow)
-
-Base.metadata.create_all(bind=engine)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="http://auth-service/auth/token")
 
@@ -49,8 +47,24 @@ class ItemCreate(BaseModel):
     title: str
     description: str
 
+# 1. Déclaration de l'application FastAPI
 app = FastAPI(title="App Service", version="1.0.0")
 
+# 2. Événement de démarrage avec boucle de retry (15 x 5s = 75s de tolérance)
+@app.on_event("startup")
+def startup():
+    max_retries = 15
+    for attempt in range(max_retries):
+        try:
+            Base.metadata.create_all(bind=engine)
+            print(f"✅ Database connected on attempt {attempt + 1}")
+            return
+        except Exception as e:
+            print(f"⏳ DB not ready ({attempt + 1}/{max_retries}): {e}")
+            time.sleep(5)
+    raise RuntimeError("❌ Could not connect to database")
+
+# 3. Middlewares
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -59,6 +73,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"]        = "1; mode=block"
     return response
 
+# 4. Routes
 @app.get("/items")
 def list_items(
     db: Session = Depends(get_db),

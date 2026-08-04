@@ -271,25 +271,29 @@ jobs:
           helm upgrade --install app-db ./helm/app-db \
             --namespace devsecops-prod --wait --timeout 180s
 
-          # Attendre que les DB soient vraiment prêtes (readiness probe)
           kubectl wait --for=condition=ready pod \
             -l app=auth-db -n devsecops-prod --timeout=120s
           kubectl wait --for=condition=ready pod \
-            -l app=app-db -n devsecops-prod --timeout=120s
+            -l app=app-db  -n devsecops-prod --timeout=120s
 
+          # Attendre que PostgreSQL accepte les connexions
+          echo "Waiting 10s for PostgreSQL to accept connections..."
+          sleep 10
           echo "✅ Databases ready"
-          kubectl get pods -n devsecops-prod -l "app in (auth-db,app-db)"
 
       - name: Deploy application services
         run: |
           helm upgrade --install auth-service ./helm/auth-service \
-            --namespace devsecops-prod --wait --timeout 120s
+            --namespace devsecops-prod \
+            --wait --timeout 180s    # ← 180s au lieu de 120s
 
           helm upgrade --install app-service ./helm/app-service \
-            --namespace devsecops-prod --wait --timeout 120s
+            --namespace devsecops-prod \
+            --wait --timeout 180s
 
           helm upgrade --install file-service ./helm/file-service \
-            --namespace devsecops-prod --wait --timeout 120s
+            --namespace devsecops-prod \
+            --wait --timeout 120s
 
           echo "✅ Services ready"
 
