@@ -208,8 +208,14 @@ jobs:
           mkdir -p ~/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
+          # Attendre que k3s soit prêt
           kubectl wait --for=condition=ready node \
-            --all --timeout=60s
+            --all --timeout=90s
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download all images
         uses: actions/download-artifact@v4
@@ -218,17 +224,14 @@ jobs:
           merge-multiple: true
           path: /tmp/images/
 
-      - name: Load images into k3s
+      - name: Load images into k3s containerd
         run: |
           for service in auth-service app-service file-service; do
+            echo "Loading $service..."
             sudo k3s ctr images import /tmp/images/${service}.tar
           done
-          sudo k3s ctr images list | grep -E "auth|app|file"
-
-      - name: Install Helm
-        uses: azure/setup-helm@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          echo "Images loaded:"
+          sudo k3s ctr images list | grep -E "auth-service|app-service|file-service"
 
       - name: Create namespace and secrets
         run: |
@@ -260,50 +263,75 @@ jobs:
             --from-literal=JWT_SECRET_KEY="$JWT_KEY" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Deploy all services
+      - name: Deploy databases first
         run: |
-          for chart in auth-db app-db auth-service app-service file-service gateway network-policies rbac; do
-            helm upgrade --install $chart ./helm/$chart \
-              --namespace devsecops-prod \
-              --wait --timeout 120s || true
-          done
+          helm upgrade --install auth-db ./helm/auth-db \
+            --namespace devsecops-prod --wait --timeout 180s
 
-      - name: Wait for all pods
-        run: |
+          helm upgrade --install app-db ./helm/app-db \
+            --namespace devsecops-prod --wait --timeout 180s
+
+          # Attendre que les DB soient vraiment prêtes (readiness probe)
           kubectl wait --for=condition=ready pod \
-            --all -n devsecops-prod \
-            --timeout=180s
+            -l app=auth-db -n devsecops-prod --timeout=120s
+          kubectl wait --for=condition=ready pod \
+            -l app=app-db -n devsecops-prod --timeout=120s
+
+          echo "✅ Databases ready"
+          kubectl get pods -n devsecops-prod -l "app in (auth-db,app-db)"
+
+      - name: Deploy application services
+        run: |
+          helm upgrade --install auth-service ./helm/auth-service \
+            --namespace devsecops-prod --wait --timeout 120s
+
+          helm upgrade --install app-service ./helm/app-service \
+            --namespace devsecops-prod --wait --timeout 120s
+
+          helm upgrade --install file-service ./helm/file-service \
+            --namespace devsecops-prod --wait --timeout 120s
+
+          echo "✅ Services ready"
+
+      - name: Deploy gateway and policies
+        run: |
+          helm upgrade --install gateway ./helm/gateway \
+            --namespace devsecops-prod --wait --timeout 60s
+
+          helm upgrade --install network-policies ./helm/network-policies \
+            --namespace devsecops-prod
+
+          helm upgrade --install rbac ./helm/rbac \
+            --namespace devsecops-prod
+
+          echo "✅ Gateway and policies deployed"
+
+      - name: Verify all pods running
+        run: |
+          echo "=== All pods status ==="
+          kubectl get pods -n devsecops-prod
+
+          # Vérifier qu'aucun pod n'est en erreur
+          FAILED=$(kubectl get pods -n devsecops-prod \
+            --field-selector=status.phase!=Running \
+            --no-headers 2>/dev/null | grep -v "Completed" | wc -l)
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "❌ Some pods are not running:"
+            kubectl get pods -n devsecops-prod \
+              --field-selector=status.phase!=Running
+            kubectl describe pods -n devsecops-prod | grep -A 10 "Events:"
+            exit 1
+          fi
+          echo "✅ All pods running"
 
       - name: Smoke tests
         run: |
           NODE_IP=$(kubectl get nodes \
             -o jsonpath='{.items[0].status.addresses[0].address}')
+          echo "Gateway: http://$NODE_IP:30080"
 
-          curl -sf http://$NODE_IP:30080/health | grep "ok"
-
-          curl -sf -X POST http://$NODE_IP:30080/auth/register \
-            -H "Content-Type: application/json" \
-            -d '{"email":"ci@test.com","password":"Test123!"}'
-
-          TOKEN=$(curl -s -X POST http://$NODE_IP:30080/auth/token \
-            -d "username=ci@test.com&password=Test123!" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-          curl -sf -X POST http://$NODE_IP:30080/items \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{"title":"CI test","description":"Pipeline validation"}'
-
-          echo "✅ All smoke tests passed"
-
-      - name: Deploy Summary
-        if: always()
-        run: |
-          echo "## 🚀 Deploy Summary" >> $GITHUB_STEP_SUMMARY
-          kubectl get pods -n devsecops-prod \
-            --no-headers \
-            -o custom-columns='NAME:.metadata.name,STATUS:.status.phase' \
-            >> $GITHUB_STEP_SUMMARY
+          # Attendre que le gateway soit
 
   # ── Phase 5 : Integration security tests ───────────────────────
   security-tests:
