@@ -79,12 +79,17 @@ jobs:
         run: |
           docker build \
             -t ${{ matrix.service }}:${{ github.sha }} \
+            -t ${{ matrix.service }}:1.0.0 \
             -t ${{ matrix.service }}:latest \
             ./services/${{ matrix.service }}/
 
       - name: Save image
         run: |
-          docker save ${{ matrix.service }}:${{ github.sha }} \
+          # Sauvegarder avec TOUS les tags
+          docker save \
+            ${{ matrix.service }}:${{ github.sha }} \
+            ${{ matrix.service }}:1.0.0 \
+            ${{ matrix.service }}:latest \
             > /tmp/${{ matrix.service }}.tar
 
       - name: Upload image artifact
@@ -230,8 +235,16 @@ jobs:
             echo "Loading $service..."
             sudo k3s ctr images import /tmp/images/${service}.tar
           done
-          echo "Images loaded:"
+
+          echo "=== Verifying images ==="
           sudo k3s ctr images list | grep -E "auth-service|app-service|file-service"
+
+          # Vérifier que le tag 1.0.0 est bien présent
+          for service in auth-service app-service file-service; do
+            sudo k3s ctr images list | grep "${service}:1.0.0" \
+              && echo "✅ ${service}:1.0.0 found" \
+              || echo "❌ ${service}:1.0.0 NOT found"
+          done
 
       - name: Create namespace and secrets
         run: |
@@ -283,9 +296,16 @@ jobs:
 
       - name: Deploy application services
         run: |
+          # Debug — voir ce que k3s a
+          echo "=== k3s images ==="
+          sudo k3s ctr images list | grep -E "auth|app|file" || echo "NO IMAGES FOUND"
+
+          # Vérifier que les secrets sont bien là
+          kubectl get secrets -n devsecops-prod
+
           helm upgrade --install auth-service ./helm/auth-service \
             --namespace devsecops-prod \
-            --wait --timeout 180s    # ← 180s au lieu de 120s
+            --wait --timeout 180s
 
           helm upgrade --install app-service ./helm/app-service \
             --namespace devsecops-prod \
@@ -309,6 +329,31 @@ jobs:
             --namespace devsecops-prod
 
           echo "✅ Gateway and policies deployed"
+
+      - name: Debug on failure
+        if: failure()
+        run: |
+          echo "=== Pods status ==="
+          kubectl get pods -n devsecops-prod -o wide
+
+          echo "=== auth-service pod events ==="
+          kubectl describe pod -l app=auth-service -n devsecops-prod \
+            2>/dev/null | tail -20 || echo "No auth-service pod"
+
+          echo "=== auth-service logs ==="
+          kubectl logs -l app=auth-service -n devsecops-prod \
+            --tail=20 2>/dev/null || echo "No logs"
+
+          echo "=== k3s images ==="
+          sudo k3s ctr images list | grep -E "auth|app|file"
+
+          echo "=== Secrets ==="
+          kubectl get secrets -n devsecops-prod
+
+          echo "=== Events ==="
+          kubectl get events -n devsecops-prod \
+            --sort-by='.lastTimestamp' | tail -20
+
 
       - name: Verify all pods running
         run: |
