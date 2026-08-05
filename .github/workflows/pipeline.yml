@@ -200,7 +200,7 @@ jobs:
             echo "| $s | ✅ |" >> $GITHUB_STEP_SUMMARY
           done
 
-  # ── Phase 4 : Deploy & Security Integration Tests ──────────────
+  # ── Phase 4 : Deploy ───────────────────────────────────────────
   deploy:
     runs-on: ubuntu-latest
     needs: iac
@@ -296,6 +296,13 @@ jobs:
 
       - name: Deploy application services
         run: |
+          # Debug — voir ce que k3s a
+          echo "=== k3s images ==="
+          sudo k3s ctr images list | grep -E "auth|app|file" || echo "NO IMAGES FOUND"
+
+          # Vérifier que les secrets sont bien là
+          kubectl get secrets -n devsecops-prod
+
           helm upgrade --install auth-service ./helm/auth-service \
             --namespace devsecops-prod \
             --wait --timeout 180s
@@ -323,11 +330,37 @@ jobs:
 
           echo "✅ Gateway and policies deployed"
 
+      - name: Debug on failure
+        if: failure()
+        run: |
+          echo "=== Pods status ==="
+          kubectl get pods -n devsecops-prod -o wide
+
+          echo "=== auth-service pod events ==="
+          kubectl describe pod -l app=auth-service -n devsecops-prod \
+            2>/dev/null | tail -20 || echo "No auth-service pod"
+
+          echo "=== auth-service logs ==="
+          kubectl logs -l app=auth-service -n devsecops-prod \
+            --tail=20 2>/dev/null || echo "No logs"
+
+          echo "=== k3s images ==="
+          sudo k3s ctr images list | grep -E "auth|app|file"
+
+          echo "=== Secrets ==="
+          kubectl get secrets -n devsecops-prod
+
+          echo "=== Events ==="
+          kubectl get events -n devsecops-prod \
+            --sort-by='.lastTimestamp' | tail -20
+
+
       - name: Verify all pods running
         run: |
           echo "=== All pods status ==="
           kubectl get pods -n devsecops-prod
 
+          # Vérifier qu'aucun pod n'est en erreur
           FAILED=$(kubectl get pods -n devsecops-prod \
             --field-selector=status.phase!=Running \
             --no-headers 2>/dev/null | grep -v "Completed" | wc -l)
@@ -341,14 +374,18 @@ jobs:
           fi
           echo "✅ All pods running"
 
+      - name: Smoke tests
+        run: |
+          NODE_IP=$(kubectl get nodes \
+            -o jsonpath='{.items[0].status.addresses[0].address}')
+          echo "Gateway: http://$NODE_IP:30080"
+
+          # Attendre que le gateway soit
+
       - name: Run automated security tests
         run: |
           NODE_IP=$(kubectl get nodes \
             -o jsonpath='{.items[0].status.addresses[0].address}')
-
-          echo "Gateway: http://$NODE_IP:30080"
-          # Attendre quelques secondes pour s'assurer que le gateway est bien prêt à recevoir du trafic HTTP
-          sleep 5
 
           # Token frais
           TOKEN=$(curl -s -X POST http://$NODE_IP:30080/auth/token \
@@ -420,15 +457,6 @@ jobs:
 
           echo "✅ Security tests completed"
 
-      - name: Debug on failure
-        if: failure()
-        run: |
-          echo "=== Pods status ==="
-          kubectl get pods -n devsecops-prod -o wide
-          echo "=== Events ==="
-          kubectl get events -n devsecops-prod \
-            --sort-by='.lastTimestamp' | tail -20
-
       - name: Security Summary
         if: always()
         run: |
@@ -440,7 +468,7 @@ jobs:
           echo "| Upload security  | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| ZAP DAST scan    | ✅ |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 5 : Runtime audit ────────────────────────────────────
+ # ── Phase 5 : Runtime audit ────────────────────────────────────
   runtime:
     runs-on: ubuntu-latest
     needs: deploy
@@ -518,4 +546,4 @@ jobs:
           echo "| Tool | PASS | FAIL |" >> $GITHUB_STEP_SUMMARY
           echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| kube-bench CIS | $PASS | $FAIL (k3s limitations) |" \
-            >> $GITHUB_STEP_SUMMARY
+            >> $GITHUB_STEP_SUMMARY 
