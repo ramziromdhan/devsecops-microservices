@@ -7,6 +7,7 @@ from jose import JWTError, jwt
 from datetime import datetime
 from pydantic import BaseModel
 import os, socket, time
+from prometheus_fastapi_instrumentator import Instrumentator
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://appuser:apppass@app-db:5432/appdb")
 SECRET_KEY   = os.getenv("JWT_SECRET_KEY", "changeme-in-production-use-vault")
@@ -49,6 +50,9 @@ class ItemCreate(BaseModel):
 
 # 1. Déclaration de l'application FastAPI
 app = FastAPI(title="App Service", version="1.0.0")
+
+# Prometheus metrics endpoint
+Instrumentator().instrument(app).expose(app)
 
 # 2. Événement de démarrage avec boucle de retry (15 x 5s = 75s de tolérance)
 @app.on_event("startup")

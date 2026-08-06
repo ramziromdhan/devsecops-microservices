@@ -3,10 +3,14 @@ kind: Service
 metadata:
   name: app-service
   namespace: devsecops-prod
+  labels:
+    app: app-service
+    monitored: "true"
 spec:
   selector:
     app: app-service
   ports:
-    - port: 8002
+    - name: http
+      port: 8002
       targetPort: 8002
   type: ClusterIP

@@ -9,11 +9,20 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from pydantic import BaseModel, EmailStr
 import os, socket, time
+from prometheus_fastapi_instrumentator import Instrumentator
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://authuser:authpass@auth-db:5432/authdb")
 SECRET_KEY   = os.getenv("JWT_SECRET_KEY", "changeme-in-production-use-vault")
 ALGORITHM    = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+
+# 1. Déclaration UNIQUE de l'application FastAPI D'ABORD
+app = FastAPI(title="Auth Service", version="1.0.0")
+
+# 2. lancer l'instrumentation Prometheus
+Instrumentator().instrument(app).expose(app)
+
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
@@ -27,8 +36,7 @@ class User(Base):
     is_active        = Column(Boolean, default=True)
     created_at       = Column(DateTime, default=datetime.utcnow)
 
-# 1. Déclaration UNIQUE de l'application FastAPI
-app = FastAPI(title="Auth Service", version="1.0.0")
+
 
 # 2. Gestionnaire de démarrage avec Retry (Seul endroit où create_all est appelé)
 @app.on_event("startup")

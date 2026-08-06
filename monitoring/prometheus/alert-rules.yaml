@@ -1,0 +1,48 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: security-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: security
+      interval: 30s
+      rules:
+        - alert: HighAuthFailureRate
+          expr: |
+            rate(http_requests_total{
+              handler=~"/auth/token",
+              status_code="401"
+            }[5m]) > 0.5
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Taux élevé d'échecs d'authentification"
+            description: >
+              Plus de 0.5 req/s avec 401 sur /auth/token
+              depuis 2 minutes — possible attaque brute force.
+
+        - alert: PodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{
+              namespace="devsecops-prod"
+            }[15m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod en CrashLoopBackOff dans devsecops-prod"
+            description: "{{ $labels.pod }} redémarre anormalement."
+
+        - alert: ServiceDown
+          expr: |
+            up{namespace="devsecops-prod"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Service down : {{ $labels.job }}"
+            description: "{{ $labels.job }} ne répond plus."

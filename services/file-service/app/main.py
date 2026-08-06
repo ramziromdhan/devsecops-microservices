@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 import os, socket, hashlib, subprocess, tempfile
+from prometheus_fastapi_instrumentator import Instrumentator
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "changeme-in-production-use-vault")
 ALGORITHM  = "HS256"
@@ -26,6 +27,9 @@ def get_current_user_email(token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 app = FastAPI(title="File Service", version="1.0.0")
+
+# . Lancer l'instrumentation et exposer le endpoint /metrics
+Instrumentator().instrument(app).expose(app)
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
