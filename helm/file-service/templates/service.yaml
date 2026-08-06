@@ -3,10 +3,14 @@ kind: Service
 metadata:
   name: file-service
   namespace: devsecops-prod
+  labels:
+    app: file-service
+    monitored: "true"
 spec:
   selector:
     app: file-service
   ports:
-    - port: 8003
+    - name: http
+      port: 8003
       targetPort: 8003
   type: ClusterIP
