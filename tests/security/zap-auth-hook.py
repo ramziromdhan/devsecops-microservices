@@ -3,12 +3,20 @@ ZAP hook pour authentification JWT automatique
 """
 
 def zap_started(zap, target):
-    # Récupérer un token
-    import urllib.request, json, urllib.parse
+    import urllib.request, json, urllib.parse, os
 
+    # Récupérer les identifiants depuis les variables d'environnement (passées via Docker)
+    test_user = os.environ.get('TEST_USER')
+    test_pass = os.environ.get('TEST_PASS')
+
+    if not test_user or not test_pass:
+        print("[ZAP Hook] ❌ Erreur : Les variables d'environnement TEST_USER ou TEST_PASS sont introuvables.")
+        return
+
+    # Utiliser les identifiants sécurisés pour générer le token
     data = urllib.parse.urlencode({
-        'username': 'ramzi@linsoft.tn',
-        'password': 'SecurePass123!'
+        'username': test_user,
+        'password': test_pass
     }).encode()
 
     req = urllib.request.Request(
@@ -31,6 +39,6 @@ def zap_started(zap, target):
                 matchstring='Authorization',
                 replacement=f'Bearer {token}'
             )
-            print(f"[ZAP Hook] JWT token injected successfully")
+            print(f"[ZAP Hook] ✅ JWT token injected successfully")
     except Exception as e:
-        print(f"[ZAP Hook] Auth failed: {e}")
+        print(f"[ZAP Hook] ❌ Auth failed: {e}")

@@ -1,6 +1,19 @@
 #!/bin/bash
 set -e
 
+# ── Chargement des variables d'environnement ────────────────────
+if [ -f ".env.test" ]; then
+    export $(grep -v '^#' .env.test | xargs)
+else
+    echo "⚠️  Attention : Fichier .env.test non trouvé à la racine."
+fi
+
+# Vérification de sécurité pour s'assurer que les variables existent
+if [ -z "$TEST_USER" ] || [ -z "$TEST_PASS" ] || [ -z "$TEST_OTHER_USER" ] || [ -z "$TEST_OTHER_PASS" ]; then
+    echo "❌ Erreur : Variables d'environnement manquantes dans .env.test"
+    exit 1
+fi
+
 echo "========================================================"
 echo "  Full Security Test Suite — devsecops-microservices"
 echo "  $(date)"
@@ -9,9 +22,9 @@ echo "========================================================"
 NODE_IP=$(kubectl get nodes \
   -o jsonpath='{.items[0].status.addresses[0].address}')
 
-# Obtenir un token
+# Obtenir un token avec les variables sécurisées
 TOKEN=$(curl -s -X POST http://$NODE_IP:30080/auth/token \
-  -d "username=ramzi@linsoft.tn&password=SecurePass123!" \
+  -d "username=$TEST_USER&password=$TEST_PASS" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 echo "Target : http://$NODE_IP:30080"
@@ -37,9 +50,10 @@ run_check() {
     fi
 }
 
+# Test du mauvais mot de passe
 R=$(curl -s -o /dev/null -w "%{http_code}" \
   -X POST http://$NODE_IP:30080/auth/token \
-  -d "username=ramzi@linsoft.tn&password=wrongpass")
+  -d "username=$TEST_USER&password=wrongpass")
 run_check "Wrong password → 401" "401" "$R"
 
 R=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -51,13 +65,13 @@ R=$(curl -s -o /dev/null -w "%{http_code}" \
   http://$NODE_IP:30080/items)
 run_check "No token → 401" "401" "$R"
 
-# Test isolation — ramzi ne voit pas les items d'un autre user
+# Test isolation — on utilise les variables de l'autre utilisateur
 curl -sf -X POST http://$NODE_IP:30080/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email":"other@test.tn","password":"OtherPass123!"}' > /dev/null 2>&1 || true
+  -d "{\"email\":\"$TEST_OTHER_USER\",\"password\":\"$TEST_OTHER_PASS\"}" > /dev/null 2>&1 || true
 
 OTHER_TOKEN=$(curl -s -X POST http://$NODE_IP:30080/auth/token \
-  -d "username=other@test.tn&password=OtherPass123!" \
+  -d "username=$TEST_OTHER_USER&password=$TEST_OTHER_PASS" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null)
 
 ITEMS=$(curl -s http://$NODE_IP:30080/items \
@@ -95,6 +109,7 @@ echo ""
 
 # ── Phase 3 : Upload Security ───────────────────────────────────
 echo "=== Phase 3 : Upload Security ==="
+# Le script test-upload-security.sh devra lui aussi utiliser $TOKEN et non reloguer
 ./tests/security/test-upload-security.sh $NODE_IP $TOKEN > /tmp/upload-out.txt 2>&1
 UPLOAD_PASS=$(grep -c "✅" /tmp/upload-out.txt || echo "0")
 UPLOAD_FAIL=$(grep -c "❌" /tmp/upload-out.txt || echo "0")
@@ -169,7 +184,8 @@ report = {
         "Authentication enforcement",
         "Security headers",
         "Upload security (path traversal, SSRF, MIME spoofing)",
-        "SQL injection (SQLMap)"
+        "SQL injection (SQLMap)",
+        "Rate limiting"
     ]
 }
 with open('tests/security/results/full-security-report.json', 'w') as f:
