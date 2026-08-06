@@ -27,3 +27,4 @@ tests/security/*-results.txt
 *.sqlite
 *.html
 *.json
+.env.test
