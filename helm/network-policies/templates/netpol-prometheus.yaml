@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netpol-allow-prometheus-scrape
+  namespace: devsecops-prod
+spec:
+  # Cible spécifiquement tes microservices
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["auth-service", "app-service", "file-service"]
+  policyTypes:
+    - Ingress
+  ingress:
+    # Autorise uniquement le trafic entrant depuis le namespace de Prometheus
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      # Ouvre uniquement les ports dédiés aux métriques
+      ports:
+        - protocol: TCP
+          port: 8001
+        - protocol: TCP
+          port: 8002
+        - protocol: TCP
+          port: 8003
