@@ -588,3 +588,71 @@ jobs:
           echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| kube-bench CIS | $PASS | $FAIL (k3s limitations) |" \
             >> $GITHUB_STEP_SUMMARY 
+
+# ── Phase 6 : DefectDojo Upload ────────────────────────────────
+  defectdojo-upload:
+    runs-on: self-hosted       
+    needs: [deploy, runtime]    
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-reports-*"
+          merge-multiple: true
+          path: /tmp/reports/
+
+      - name: Import reports to DefectDojo
+        run: |
+          cd $GITHUB_WORKSPACE
+
+          # DefectDojo est sur localhost — accessible depuis le runner local
+          source monitoring/defectdojo/.dd-config
+
+          echo "DefectDojo: $DD_URL"
+          curl -sf $DD_URL/api/v2/ > /dev/null \
+            && echo "✅ DefectDojo accessible" \
+            || { echo "❌ DefectDojo non accessible"; exit 1; }
+
+          # Copier les rapports téléchargés dans le bon dossier
+          mkdir -p tests/security/results/
+          cp /tmp/reports/*.json tests/security/results/ 2>/dev/null || true
+
+          # Lancer l'import
+          chmod +x ./monitoring/defectdojo/import-reports.sh
+          ./monitoring/defectdojo/import-reports.sh
+
+      - name: Export Trivy Operator reports
+        run: |
+          cd $GITHUB_WORKSPACE
+          chmod +x ./monitoring/defectdojo/export-trivy-operator.sh
+          ./monitoring/defectdojo/export-trivy-operator.sh
+
+      - name: DefectDojo Summary
+        if: always()
+        run: |
+          source $GITHUB_WORKSPACE/monitoring/defectdojo/.dd-config
+
+          # On récupère dynamiquement l'ID numérique à partir du nom du produit
+          REAL_PRODUCT_ID=$(curl -s -X GET "$DD_URL/api/v2/products/?name=$PRODUCT_NAME" \
+            -H "Authorization: Token ${{ secrets.DD_TOKEN }}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('results',[{}])[0].get('id',''))")
+
+          # On interroge l'API pour avoir le nombre de vulnérabilités
+          STATS=$(curl -s \
+            "$DD_URL/api/v2/findings/?product=$REAL_PRODUCT_ID&limit=1" \
+            -H "Authorization: Token ${{ secrets.DD_TOKEN }}" \
+            | python3 -c "
+          import sys,json
+          d=json.load(sys.stdin)
+          print(d.get('count',0))
+          " 2>/dev/null || echo "0")
+
+          # Génération du résumé visuel dans l'interface GitHub
+          echo "## 🛡️ DefectDojo" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Total findings | $STATS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dashboard | $DD_URL/product/$REAL_PRODUCT_ID/finding/all |" >> $GITHUB_STEP_SUMMARY
