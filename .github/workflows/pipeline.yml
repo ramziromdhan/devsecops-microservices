@@ -605,11 +605,23 @@ jobs:
           merge-multiple: true
           path: /tmp/reports/
 
+      - name: Generate .dd-config dynamically
+        run: |
+          cd $GITHUB_WORKSPACE
+          mkdir -p monitoring/defectdojo
+          
+          # On crée le fichier à la volée avec tes secrets GitHub
+          cat << EOF > monitoring/defectdojo/.dd-config
+          DD_URL="${{ secrets.DD_URL }}"
+          DD_TOKEN="${{ secrets.DD_TOKEN }}"
+          PRODUCT_NAME="devsecops-microservices"
+          EOF
+          
+          echo "✅ Fichier .dd-config généré dans le workspace"
+
       - name: Import reports to DefectDojo
         run: |
           cd $GITHUB_WORKSPACE
-
-          # DefectDojo est sur localhost — accessible depuis le runner local
           source monitoring/defectdojo/.dd-config
 
           echo "DefectDojo: $DD_URL"
@@ -617,11 +629,9 @@ jobs:
             && echo "✅ DefectDojo accessible" \
             || { echo "❌ DefectDojo non accessible"; exit 1; }
 
-          # Copier les rapports téléchargés dans le bon dossier
           mkdir -p tests/security/results/
           cp /tmp/reports/*.json tests/security/results/ 2>/dev/null || true
 
-          # Lancer l'import
           chmod +x ./monitoring/defectdojo/import-reports.sh
           ./monitoring/defectdojo/import-reports.sh
 
@@ -634,7 +644,8 @@ jobs:
       - name: DefectDojo Summary
         if: always()
         run: |
-          source $GITHUB_WORKSPACE/monitoring/defectdojo/.dd-config
+          cd $GITHUB_WORKSPACE
+          source monitoring/defectdojo/.dd-config
 
           # On récupère dynamiquement l'ID numérique à partir du nom du produit
           REAL_PRODUCT_ID=$(curl -s -X GET "$DD_URL/api/v2/products/?name=$PRODUCT_NAME" \
