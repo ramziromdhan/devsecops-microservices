@@ -625,7 +625,7 @@ jobs:
           source monitoring/defectdojo/.dd-config
 
           echo "DefectDojo: $DD_URL"
-          curl -sf $DD_URL/api/v2/ > /dev/null \
+          curl -sf -H "Authorization: Token $DD_TOKEN" $DD_URL/api/v2/ > /dev/null \
             && echo "✅ DefectDojo accessible" \
             || { echo "❌ DefectDojo non accessible"; exit 1; }
 
