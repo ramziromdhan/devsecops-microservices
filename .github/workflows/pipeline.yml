@@ -601,7 +601,7 @@ jobs:
       - name: Download all reports
         uses: actions/download-artifact@v4
         with:
-          pattern: "*-reports-*"
+          #pattern: "*-reports-*"
           merge-multiple: true
           path: /tmp/reports/
 

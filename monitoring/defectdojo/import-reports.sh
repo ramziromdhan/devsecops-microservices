@@ -26,7 +26,9 @@ import_scan() {
         -H "Authorization: Token $DD_TOKEN" \
         -F "scan_type=$scanner" \
         -F "file=@$file" \
-        -F "engagement=$ENGAGEMENT_ID" \
+        -F "product_name=$PRODUCT_NAME" \
+        -F "engagement_name=CI/CD Scans" \
+        -F "auto_create_context=true" \
         -F "active=true" \
         -F "verified=false" \
         -F "close_old_findings=true" \

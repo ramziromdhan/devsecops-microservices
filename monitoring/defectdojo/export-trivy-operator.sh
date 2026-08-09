@@ -56,7 +56,9 @@ for report_file in /tmp/trivy-operator-reports/*.json; do
         -H "Authorization: Token $DD_TOKEN" \
         -F "scan_type=Trivy Scan" \
         -F "file=@$report_file" \
-        -F "engagement=$ENGAGEMENT_ID" \
+        -F "product_name=$PRODUCT_NAME" \
+        -F "engagement_name=CI/CD Scans" \
+        -F "auto_create_context=true" \
         -F "active=true" \
         -F "close_old_findings=false" \
         | python3 -c "
