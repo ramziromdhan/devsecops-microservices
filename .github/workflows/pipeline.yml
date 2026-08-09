@@ -612,9 +612,9 @@ jobs:
           
           # On crée le fichier à la volée avec tes secrets GitHub
           cat << EOF > monitoring/defectdojo/.dd-config
-          DD_URL="${{ secrets.DD_URL }}"
-          DD_TOKEN="${{ secrets.DD_TOKEN }}"
-          PRODUCT_NAME="devsecops-microservices"
+          export DD_URL="${{ secrets.DD_URL }}"
+          export DD_TOKEN="${{ secrets.DD_TOKEN }}"
+          export PRODUCT_NAME="devsecops-microservices"
           EOF
           
           echo "✅ Fichier .dd-config généré dans le workspace"
@@ -630,7 +630,7 @@ jobs:
             || { echo "❌ DefectDojo non accessible"; exit 1; }
 
           mkdir -p tests/security/results/
-          cp /tmp/reports/*.json tests/security/results/ 2>/dev/null || true
+          find /tmp/reports -type f -name "*.json" -exec cp {} tests/security/results/ \;
 
           chmod +x ./monitoring/defectdojo/import-reports.sh
           ./monitoring/defectdojo/import-reports.sh
