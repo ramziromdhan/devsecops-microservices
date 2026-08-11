@@ -35,6 +35,30 @@ data:
             proxy_set_header Host $host;
         }
 
+        # Routes file-service Go (nouvelles routes)
+        location /files/ {
+            set $file http://file-service.devsecops-prod.svc.cluster.local:8003;
+            proxy_pass $file;
+            proxy_set_header Authorization $http_authorization;
+            proxy_set_header Host $host;
+            client_max_body_size 500m;
+        }
+
+        location /share {
+            set $file http://file-service.devsecops-prod.svc.cluster.local:8003;
+            proxy_pass $file;
+            proxy_set_header Authorization $http_authorization;
+            proxy_set_header Host $host;
+        }
+
+        location /download/ {
+            set $file http://file-service.devsecops-prod.svc.cluster.local:8003;
+            proxy_pass $file;
+            proxy_set_header Authorization $http_authorization;
+            proxy_set_header Host $host;
+        }
+
+        # Route legacy upload (garde compatibilité)
         location /upload {
             set $file http://file-service.devsecops-prod.svc.cluster.local:8003;
             proxy_pass $file;

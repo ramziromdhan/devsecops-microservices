@@ -36,6 +36,9 @@ spec:
         - podSelector:
             matchLabels:
               app: app-service
+        - podSelector:
+            matchLabels:
+              app: file-service
       ports:
         - port: 5432
   egress: []
