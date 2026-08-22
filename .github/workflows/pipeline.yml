@@ -71,7 +71,7 @@ jobs:
     needs: sast
     strategy:
       matrix:
-        service: [auth-service, app-service, file-service]
+        service: [auth-service, app-service, file-service-go]
     steps:
       - uses: actions/checkout@v4
 
@@ -85,7 +85,6 @@ jobs:
 
       - name: Save image
         run: |
-          # Sauvegarder avec TOUS les tags
           docker save \
             ${{ matrix.service }}:${{ github.sha }} \
             ${{ matrix.service }}:1.0.0 \
@@ -105,7 +104,7 @@ jobs:
     needs: build
     strategy:
       matrix:
-        service: [auth-service, app-service, file-service]
+        service: [auth-service, app-service, file-service-go]
     steps:
       - uses: actions/checkout@v4
 
@@ -148,7 +147,7 @@ jobs:
           name: sca-${{ matrix.service }}-${{ github.sha }}
           path: sbom-${{ matrix.service }}.json
 
-    # ── Phase 3 : Cosign — Signature de l'image ───────────────────
+  # ── Phase 3 : Cosign — Signature de l'image ───────────────────
   sign:
     runs-on: ubuntu-latest
     needs: sca
@@ -175,7 +174,6 @@ jobs:
             if [ -f "/tmp/images/${service}.tar" ]; then
               docker load < /tmp/images/${service}.tar
 
-              # Signer l'image localement avec une clé fichier
               cosign sign --key env://COSIGN_PRIVATE_KEY \
                 --yes \
                 ${service}:${{ github.sha }} 2>/dev/null || \
@@ -191,8 +189,6 @@ jobs:
         run: |
           for service in auth-service app-service file-service-go; do
             echo "Vérification $service..."
-            # La vérification complète nécessite un registry
-            # En local on vérifie que la clé est valide
             echo "$COSIGN_PUBLIC_KEY" > /tmp/cosign.pub
             cosign verify --key /tmp/cosign.pub \
               ${service}:${{ github.sha }} 2>/dev/null || \
@@ -230,7 +226,7 @@ jobs:
 
       - name: Kubesec — security scores
         run: |
-          for service in auth-service app-service file-service; do
+          for service in auth-service app-service file-service-go; do
             echo "=== Kubesec: $service ==="
             helm template $service ./helm/$service \
               --set image.pullPolicy=Never > /tmp/${service}-rendered.yaml
@@ -256,7 +252,7 @@ jobs:
           echo "## 🏗️ IaC Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Chart | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          for s in auth-service app-service file-service gateway; do
+          for s in auth-service app-service file-service-go gateway; do
             echo "| $s | ✅ |" >> $GITHUB_STEP_SUMMARY
           done
 
@@ -273,7 +269,6 @@ jobs:
           mkdir -p ~/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
-          # Attendre que k3s soit prêt
           kubectl wait --for=condition=ready node \
             --all --timeout=90s
 
@@ -291,16 +286,15 @@ jobs:
 
       - name: Load images into k3s containerd
         run: |
-          for service in auth-service app-service file-service; do
+          for service in auth-service app-service file-service-go; do
             echo "Loading $service..."
             sudo k3s ctr images import /tmp/images/${service}.tar
           done
 
           echo "=== Verifying images ==="
-          sudo k3s ctr images list | grep -E "auth-service|app-service|file-service"
+          sudo k3s ctr images list | grep -E "auth-service|app-service|file-service-go"
 
-          # Vérifier que le tag 1.0.0 est bien présent
-          for service in auth-service app-service file-service; do
+          for service in auth-service app-service file-service-go; do
             sudo k3s ctr images list | grep "${service}:1.0.0" \
               && echo "✅ ${service}:1.0.0 found" \
               || echo "❌ ${service}:1.0.0 NOT found"
@@ -336,10 +330,12 @@ jobs:
             --from-literal=JWT_SECRET_KEY="$JWT_KEY" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-          kubectl create secret generic file-service-secret \
+          kubectl create secret generic file-service-go-secret \
             --namespace devsecops-prod \
-            --from-literal=MINIO_ROOT_USER=minioadmin \
-            --from-literal=MINIO_ROOT_PASSWORD=minioadmin \
+            --from-literal=MINIO_ENDPOINT=minio:9000 \
+            --from-literal=MINIO_ACCESS_KEY=minioadmin \
+            --from-literal=MINIO_SECRET_KEY=minioadmin \
+            --from-literal=MINIO_BUCKET=uploads \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy databases first
@@ -355,18 +351,15 @@ jobs:
           kubectl wait --for=condition=ready pod \
             -l app=app-db  -n devsecops-prod --timeout=120s
 
-          # Attendre que PostgreSQL accepte les connexions
           echo "Waiting 10s for PostgreSQL to accept connections..."
           sleep 10
           echo "✅ Databases ready"
 
       - name: Deploy application services
         run: |
-          # Debug — voir ce que k3s a
           echo "=== k3s images ==="
           sudo k3s ctr images list | grep -E "auth|app|file" || echo "NO IMAGES FOUND"
 
-          # Vérifier que les secrets sont bien là
           kubectl get secrets -n devsecops-prod
 
           helm upgrade --install auth-service ./helm/auth-service \
@@ -377,7 +370,7 @@ jobs:
             --namespace devsecops-prod \
             --wait --timeout 180s
 
-          helm upgrade --install file-service ./helm/file-service \
+          helm upgrade --install file-service-go ./helm/file-service-go \
             --namespace devsecops-prod \
             --wait --timeout 120s
 
@@ -420,13 +413,11 @@ jobs:
           kubectl get events -n devsecops-prod \
             --sort-by='.lastTimestamp' | tail -20
 
-
       - name: Verify all pods running
         run: |
           echo "=== All pods status ==="
           kubectl get pods -n devsecops-prod
 
-          # Vérifier qu'aucun pod n'est en erreur
           FAILED=$(kubectl get pods -n devsecops-prod \
             --field-selector=status.phase!=Running \
             --no-headers 2>/dev/null | grep -v "Completed" | wc -l)
@@ -440,14 +431,6 @@ jobs:
           fi
           echo "✅ All pods running"
 
-      - name: Smoke tests
-        run: |
-          NODE_IP=$(kubectl get nodes \
-            -o jsonpath='{.items[0].status.addresses[0].address}')
-          echo "Gateway: http://$NODE_IP:30080"
-
-          # Attendre que le gateway soit
-
       - name: Wait for API Gateway
         run: |
           NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
@@ -455,7 +438,6 @@ jobs:
 
           echo "Attente que le Gateway et les services soient prêts..."
           for i in {1..15}; do
-            # On teste l'accès au Gateway. S'il ne renvoie plus 000 (connexion refusée) ou 502/503, c'est qu'il route le trafic.
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://$NODE_IP:30080/ || echo "000")
             if [ "$HTTP_CODE" != "000" ] && [ "$HTTP_CODE" != "502" ] && [ "$HTTP_CODE" != "503" ]; then
               echo "✅ Gateway prêt (Code HTTP: $HTTP_CODE) !"
@@ -470,19 +452,14 @@ jobs:
           NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
 
           echo "=== 1. Création de l'utilisateur de test ==="
-          # On appelle ta route FastAPI /auth/register
-          # Le JSON correspond exactement à ton schéma Pydantic 'UserCreate'
           curl -s -X POST http://$NODE_IP:30080/auth/register \
             -H "Content-Type: application/json" \
             -d '{"email": "ci@test.com", "password": "Test123!"}'
           
           echo -e "\n\n=== 2. Authentification initiale ==="
-          # L'utilisateur existe maintenant en base (avec mot de passe hashé)
-          # On peut donc générer le token via OAuth2PasswordRequestForm
           AUTH_RESPONSE=$(curl -s -X POST http://$NODE_IP:30080/auth/token \
             -d "username=ci@test.com&password=Test123!")
 
-          # Extraction sécurisée avec Python
           TOKEN=$(echo "$AUTH_RESPONSE" | python3 -c "
           import sys, json
           try:
@@ -492,7 +469,6 @@ jobs:
               print('ERROR_JSON_DECODE')
           ")
 
-          # Si le token n'a pas pu être extrait, on affiche l'erreur exacte
           if [ "$TOKEN" = "ERROR_NO_TOKEN" ] || [ "$TOKEN" = "ERROR_JSON_DECODE" ] || [ -z "$TOKEN" ]; then
             echo "❌ Impossible de récupérer l'access_token."
             echo "Réponse brute de l'API :"
@@ -502,7 +478,6 @@ jobs:
 
           echo "✅ Token récupéré avec succès : ${TOKEN:0:20}..."
 
-          # ─── Auth tests ───
           echo "=== Auth tests ==="
           CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST http://$NODE_IP:30080/auth/token \
@@ -518,7 +493,6 @@ jobs:
             && echo "✅ Invalid token → 401" \
             || echo "❌ Invalid token → $CODE"
 
-          # ─── Security headers ───
           echo "=== Security headers ==="
           HEADERS=$(curl -sI http://$NODE_IP:30080/health || curl -sI http://$NODE_IP:30080/)
           echo "$HEADERS" | grep -qi "X-Frame-Options" \
@@ -528,7 +502,6 @@ jobs:
             && echo "✅ X-Content-Type-Options" \
             || echo "❌ X-Content-Type-Options manquant"
 
-          # ─── Upload security ───
           echo "=== Upload security ==="
           echo "test" > /tmp/test.txt
           RESULT=$(curl -s -X POST http://$NODE_IP:30080/upload \
@@ -550,7 +523,6 @@ jobs:
             && echo "✅ .php blocked → 400" \
             || echo "❌ .php not blocked → $RESULT"
 
-          # ─── ZAP baseline ───
           echo "=== ZAP DAST scan ==="
           mkdir -p /tmp/zap-results
           docker run --rm \
@@ -575,7 +547,7 @@ jobs:
           echo "| Upload security  | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| ZAP DAST scan    | ✅ |" >> $GITHUB_STEP_SUMMARY
 
- # ── Phase 6 : Runtime audit ────────────────────────────────────
+  # ── Phase 6 : Runtime audit ────────────────────────────────────
   runtime:
     runs-on: ubuntu-latest
     needs: deploy
@@ -600,7 +572,6 @@ jobs:
           kubectl create namespace devsecops-prod \
             --dry-run=client -o yaml | kubectl apply -f -
 
-          # Secrets minimaux
           AUTH_PASS=$(openssl rand -base64 20 | tr -d '\n/+=')
           APP_PASS=$(openssl rand -base64 20 | tr -d '\n/+=')
           JWT_KEY=$(openssl rand -base64 48 | tr -d '\n')
@@ -618,7 +589,6 @@ jobs:
             --from-literal=JWT_SECRET_KEY="$JWT_KEY" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-          # Déployer uniquement pour kube-bench (pas besoin de l'app)
           helm upgrade --install network-policies \
             ./helm/network-policies -n devsecops-prod
 
@@ -655,7 +625,7 @@ jobs:
           echo "| kube-bench CIS | $PASS | $FAIL (k3s limitations) |" \
             >> $GITHUB_STEP_SUMMARY 
 
-# ── Phase 7 : Falco — Runtime Security Test ───────────────────
+  # ── Phase 7 : Falco — Runtime Security Test ───────────────────
   falco-test:
     runs-on: ubuntu-latest
     needs: deploy
@@ -673,7 +643,6 @@ jobs:
 
       - name: Clean Falco Rules (Extract raw YAML from ConfigMap)
         run: |
-          # Si le fichier contient une ConfigMap K8s, on extrait uniquement les règles
           if grep -q "kind: ConfigMap" falco/custom-rules.yaml; then
             echo "Extraction des règles brutes..."
             yq e '.data["custom-rules.yaml"]' falco/custom-rules.yaml > /tmp/clean-rules.yaml
@@ -687,7 +656,6 @@ jobs:
           helm repo add falcosecurity https://falcosecurity.github.io/charts
           helm repo update
           
-          # Utilisation de rules_custom (sans point dans le nom)
           helm install falco falcosecurity/falco \
             --namespace falco \
             --create-namespace \
@@ -769,8 +737,7 @@ jobs:
           grep -i "ALERTE\|Notice\|Critical\|Warning" /tmp/falco-events.log | head -5 >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-          
-# ── Phase 8 : DefectDojo Upload ────────────────────────────────
+  # ── Phase 8 : DefectDojo Upload ────────────────────────────────
   defectdojo-upload:
     runs-on: self-hosted       
     needs: [deploy, runtime]    
@@ -782,7 +749,6 @@ jobs:
       - name: Download all reports
         uses: actions/download-artifact@v4
         with:
-          #pattern: "*-reports-*"
           merge-multiple: true
           path: /tmp/reports/
 
@@ -791,7 +757,6 @@ jobs:
           cd $GITHUB_WORKSPACE
           mkdir -p monitoring/defectdojo
           
-          # On crée le fichier à la volée avec tes secrets GitHub
           cat << EOF > monitoring/defectdojo/.dd-config
           export DD_URL="${{ secrets.DD_URL }}"
           export DD_TOKEN="${{ secrets.DD_TOKEN }}"
@@ -828,11 +793,9 @@ jobs:
           cd $GITHUB_WORKSPACE
           source monitoring/defectdojo/.dd-config
 
-          # On récupère dynamiquement l'ID numérique à partir du nom du produit
           REAL_PRODUCT_ID=$(curl -s -X GET "$DD_URL/api/v2/products/?name=$PRODUCT_NAME" \
             -H "Authorization: Token ${{ secrets.DD_TOKEN }}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('results',[{}])[0].get('id',''))")
 
-          # On interroge l'API pour avoir le nombre de vulnérabilités
           STATS=$(curl -s \
             "$DD_URL/api/v2/findings/?product=$REAL_PRODUCT_ID&limit=1" \
             -H "Authorization: Token ${{ secrets.DD_TOKEN }}" \
@@ -842,7 +805,6 @@ jobs:
           print(d.get('count',0))
           " 2>/dev/null || echo "0")
 
-          # Génération du résumé visuel dans l'interface GitHub
           echo "## 🛡️ DefectDojo" >> $GITHUB_STEP_SUMMARY
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
