@@ -1,0 +1,30 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-vulnerable-images
+  annotations:
+    policies.kyverno.io/title: Block Vulnerable Images
+    policies.kyverno.io/description: >
+      Bloque les images avec des vulnérabilités CRITICAL détectées par Trivy.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: check-trivy-scan
+      match:
+        any:
+        - resources:
+            kinds:
+              - Pod
+            namespaces:
+              - devsecops-prod
+      validate:
+        message: >
+          L'image contient des vulnérabilités CRITICAL.
+          Effectuez un scan Trivy et corrigez les CVE avant de déployer.
+        deny:
+          conditions:
+            any:
+            - key: "{{ request.object.metadata.annotations.\"trivy.aquasec.com/critical-count\" || '0' }}"
+              operator: GreaterThan
+              value: "0"

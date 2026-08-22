@@ -1,0 +1,34 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signature
+  annotations:
+    policies.kyverno.io/title: Verify Image Signature
+    policies.kyverno.io/description: >
+      Bloque le déploiement de toute image non signée par Cosign.
+      Seules les images signées avec notre clé privée sont autorisées.
+spec:
+  validationFailureAction: Enforce   # Enforce = bloque, Audit = alerte seulement
+  background: false
+  rules:
+    - name: check-image-signature
+      match:
+        any:
+        - resources:
+            kinds:
+              - Pod
+            namespaces:
+              - devsecops-prod
+      verifyImages:
+        - imageReferences:
+            - "*/auth-service:*"
+            - "*/app-service:*"
+            - "*/file-service-go:*"
+          attestors:
+            - count: 1
+              entries:
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      COLLER_COSIGN_PUB_ICI
+                      -----END PUBLIC KEY-----
