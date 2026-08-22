@@ -336,6 +336,14 @@ jobs:
             --from-literal=JWT_SECRET_KEY="$JWT_KEY" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+          kubectl create secret generic file-service-go-secret \
+            --namespace devsecops-prod \
+            --from-literal=MINIO_ENDPOINT=minio:9000 \
+            --from-literal=MINIO_ACCESS_KEY=minioadmin \
+            --from-literal=MINIO_SECRET_KEY=minioadmin \
+            --from-literal=MINIO_BUCKET=uploads \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Deploy databases first
         run: |
           helm upgrade --install auth-db ./helm/auth-db \
