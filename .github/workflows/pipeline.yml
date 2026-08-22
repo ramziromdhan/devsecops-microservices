@@ -679,13 +679,13 @@ jobs:
           helm repo add falcosecurity https://falcosecurity.github.io/charts
           helm repo update
           
-          # Injection directe du fichier custom-rules.yaml dans le Helm Chart
+          # Injection directe des règles Falco custom dans le Helm Chart
           helm install falco falcosecurity/falco \
             --namespace falco \
             --create-namespace \
             --set driver.kind=modern_ebpf \
             --set falcosidekick.enabled=false \
-            --set-file customRules.custom-rules\.yaml=falco/custom-rules.yaml \
+            --set-file 'customRules.custom-rules\.yaml=falco/falco-rules.yaml' \
             --wait --timeout 120s
             
           kubectl get pods -n falco
