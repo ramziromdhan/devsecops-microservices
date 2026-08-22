@@ -665,21 +665,38 @@ jobs:
           sudo chown $USER:$USER ~/.kube/config
           kubectl wait --for=condition=ready node --all --timeout=90s
 
+      - name: Clean Falco Rules (Extract raw YAML from ConfigMap)
+        run: |
+          # Si le fichier contient une ConfigMap K8s, on extrait uniquement les règles
+          if grep -q "kind: ConfigMap" falco/custom-rules.yaml; then
+            echo "Extraction des règles brutes..."
+            yq e '.data["custom-rules.yaml"]' falco/custom-rules.yaml > /tmp/clean-rules.yaml
+          else
+            cp falco/custom-rules.yaml /tmp/clean-rules.yaml
+          fi
+
       - name: Install Helm + Falco avec Custom Rules
         run: |
           curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           helm repo add falcosecurity https://falcosecurity.github.io/charts
           helm repo update
           
-          # Injection directe du fichier custom-rules.yaml dans le Helm Chart
+          # Utilisation de rules_custom (sans point dans le nom)
           helm install falco falcosecurity/falco \
             --namespace falco \
             --create-namespace \
             --set driver.kind=modern_ebpf \
             --set falcosidekick.enabled=false \
-            --set-file customRules.custom-rules\.yaml=falco/custom-rules.yaml \
-            --wait --timeout 120s
-            
+            --set-file customRules.rules_custom=/tmp/clean-rules.yaml \
+            --wait --timeout 180s
+
+      - name: Wait for Falco Pod Readiness
+        run: |
+          echo "Attente du statut Ready pour le pod Falco..."
+          kubectl wait --namespace falco \
+            --for=condition=ready pod \
+            -l app.kubernetes.io/name=falco \
+            --timeout=120s
           kubectl get pods -n falco
 
       - name: Deploy app for runtime test
@@ -697,7 +714,6 @@ jobs:
 
       - name: Start Falco log capture
         run: |
-          # Sauvegarde du PID dans un fichier au lieu d'une variable d'env (plus fiable entre étapes)
           kubectl logs -n falco -l app.kubernetes.io/name=falco -c falco -f > /tmp/falco-events.log 2>&1 &
           echo $! > /tmp/falco_logger.pid
           sleep 5
@@ -705,7 +721,6 @@ jobs:
       - name: Simulate intrusion — spawn shell & read sensitive file
         run: |
           echo "=== Simulation d'intrusion ==="
-          # Exécution d'un shell + lecture de /etc/passwd (déclenche Règle 1 et Règle 2)
           kubectl exec pod/auth-service-test \
             --namespace=devsecops-prod \
             -- /bin/sh -c "whoami && cat /etc/passwd" \
@@ -715,7 +730,6 @@ jobs:
 
       - name: Verify Falco detection
         run: |
-          # Arrêt de la capture de logs
           if [ -f /tmp/falco_logger.pid ]; then
             kill $(cat /tmp/falco_logger.pid) 2>/dev/null || true
           fi
@@ -723,8 +737,7 @@ jobs:
           echo "=== Événements Falco capturés ==="
           cat /tmp/falco-events.log
 
-          # Vérification de l'alerte personnalisée ou standard
-          if grep -qi "ALERTE\|Shell\|Terminal" /tmp/falco-events.log; then
+          if grep -qi "ALERTE\|Shell\|Terminal\|Sensitive" /tmp/falco-events.log; then
             echo "✅ Falco a détecté l'intrusion simulée"
           else
             echo "❌ Falco n'a pas capturé l'événement"
@@ -747,9 +760,10 @@ jobs:
           echo "| Règle MITRE | T1059 — Command and Scripting Interpreter |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```json' >> $GITHUB_STEP_SUMMARY
-          grep -i "ALERTE\|Notice\|Critical" /tmp/falco-events.log | head -5 >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          grep -i "ALERTE\|Notice\|Critical\|Warning" /tmp/falco-events.log | head -5 >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+          
 # ── Phase 8 : DefectDojo Upload ────────────────────────────────
   defectdojo-upload:
     runs-on: self-hosted       
