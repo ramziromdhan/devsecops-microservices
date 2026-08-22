@@ -1,0 +1,16 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: gateway
+  namespace: devsecops-prod
+spec:
+  host: gateway.apps.cluster.linsoft.local
+  to:
+    kind: Service
+    name: gateway
+    weight: 100
+  port:
+    targetPort: 80
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
