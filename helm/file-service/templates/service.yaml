@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: file-service
+  name: file-service-go
   namespace: devsecops-prod
   labels:
-    app: file-service
+    app: file-service-go
     monitored: "true"
 spec:
   selector:
-    app: file-service
+    app: file-service-go
   ports:
     - name: http
       port: 8003
