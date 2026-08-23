@@ -853,7 +853,7 @@ jobs:
     needs: [deploy, runtime, falco-test]   
 
     if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' 
-    
+
     steps:
       - uses: actions/checkout@v4
 
