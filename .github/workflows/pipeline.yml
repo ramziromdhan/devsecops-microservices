@@ -71,7 +71,7 @@ jobs:
     needs: sast
     strategy:
       matrix:
-        service: [auth-service, app-service, file-service]
+        service: [auth-service, app-service, file-service-go]
     steps:
       - uses: actions/checkout@v4
 
@@ -291,13 +291,13 @@ jobs:
 
       - name: Load images into k3s containerd
         run: |
-          for service in auth-service app-service file-service; do
+          for service in auth-service app-service file-service-go; do
             echo "Loading $service..."
             sudo k3s ctr images import /tmp/images/${service}.tar
           done
 
           echo "=== Verifying images ==="
-          sudo k3s ctr images list | grep -E "auth-service|app-service|file-service"
+          sudo k3s ctr images list | grep -E "auth|app|file"
 
           # Vérifier que le tag 1.0.0 est bien présent
           for service in auth-service app-service file-service; do
@@ -338,8 +338,11 @@ jobs:
 
           kubectl create secret generic file-service-go-secret \
             --namespace devsecops-prod \
-            --from-literal=MINIO_ROOT_USER=minioadmin \
-            --from-literal=MINIO_ROOT_PASSWORD=minioadmin \
+            --from-literal=MINIO_ACCESS_KEY=minioadmin \
+            --from-literal=MINIO_SECRET_KEY=$MINIO_PASS \
+            --from-literal=MINIO_ENDPOINT=minio:9000 \
+            --from-literal=MINIO_BUCKET=uploads \
+            --from-literal=DATABASE_URL="postgresql://appuser:${APP_PASS}@app-db:5432/appdb?sslmode=disable" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy databases first
@@ -379,7 +382,10 @@ jobs:
 
           helm upgrade --install file-service-go ./helm/file-service \
             --namespace devsecops-prod \
-            --wait --timeout 120s
+            --set image.repository=file-service-go \
+            --set image.tag=1.0.0 \
+            --set image.pullPolicy=Never \
+            --wait --timeout 180s
 
           echo "✅ Services ready"
 
@@ -410,6 +416,14 @@ jobs:
           kubectl logs -l app=auth-service -n devsecops-prod \
             --tail=20 2>/dev/null || echo "No logs"
 
+          echo "=== file-service events ==="
+          kubectl describe pod -l app=file-service \
+            -n devsecops-prod 2>/dev/null | tail -20
+
+          echo "=== file-service logs ==="
+          kubectl logs -l app=file-service \
+            -n devsecops-prod --tail=30 2>/dev/null || echo "No logs"
+
           echo "=== k3s images ==="
           sudo k3s ctr images list | grep -E "auth|app|file"
 
@@ -419,6 +433,9 @@ jobs:
           echo "=== Events ==="
           kubectl get events -n devsecops-prod \
             --sort-by='.lastTimestamp' | tail -20
+
+          echo "=== Helm releases ==="
+          helm list -n devsecops-prod
 
 
       - name: Verify all pods running
