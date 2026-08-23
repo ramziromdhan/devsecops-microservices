@@ -23,6 +23,25 @@ spec:
         fsGroup: 1001
         seccompProfile:
           type: RuntimeDefault
+      # ✅ Init container pour attendre MinIO
+      initContainers:
+        - name: wait-for-minio
+          image: busybox:1.35
+          command: 
+            - 'sh'
+            - '-c'
+            - |
+              echo "Waiting for MinIO to be ready..."
+              for i in $(seq 1 60); do
+                if nc -zv minio 9000 2>/dev/null; then
+                  echo "✅ MinIO is ready!"
+                  exit 0
+                fi
+                echo "[$i/60] MinIO not ready yet, retrying..."
+                sleep 2
+              done
+              echo "❌ MinIO failed to respond after 120 seconds"
+              exit 1
       containers:
         - name: file-service-go
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -79,14 +98,18 @@ spec:
             httpGet:
               path: /health
               port: {{ .Values.service.port }}
-            initialDelaySeconds: 10
+            initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: {{ .Values.service.port }}
-            initialDelaySeconds: 20
+            initialDelaySeconds: 30
             periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             - name: uploads
               mountPath: /tmp/uploads
