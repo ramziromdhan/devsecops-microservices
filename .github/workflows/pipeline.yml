@@ -307,6 +307,7 @@ jobs:
           done
 
       - name: Create namespace and secrets
+        id: create-secrets  # ✅ Ajouter un ID
         run: |
           kubectl create namespace devsecops-prod --dry-run=client -o yaml \
             | kubectl apply -f -
@@ -315,6 +316,9 @@ jobs:
           APP_PASS=$(openssl rand -base64 20 | tr -d '\n/+=')
           JWT_KEY=$(openssl rand -base64 48 | tr -d '\n')
           MINIO_PASS=$(openssl rand -base64 20 | tr -d '\n/+=')
+
+          # ✅ Exporter MINIO_PASS pour le step suivant
+          echo "minio_pass=$MINIO_PASS" >> $GITHUB_OUTPUT
 
           kubectl create secret generic auth-db-secret \
             --namespace devsecops-prod \
@@ -366,6 +370,8 @@ jobs:
           echo "✅ Databases ready"
 
       - name: Deploy application services
+        env:
+          MINIO_PASS: ${{ steps.create-secrets.outputs.minio_pass }}
         run: |
           # Debug — voir ce que k3s a
           echo "=== k3s images ==="
@@ -380,7 +386,21 @@ jobs:
             --namespace devsecops-prod \
             --set rootUser=minioadmin \
             --set rootPassword=$MINIO_PASS \
-            --wait --timeout 180s
+            --wait --timeout 300s
+
+           # Wait for MinIO pod to be Ready
+          echo "Waiting for MinIO to be fully ready..."
+          kubectl wait --for=condition=ready pod \
+            -l app=minio -n devsecops-prod --timeout=180s
+
+          # Extra wait to ensure MinIO is accepting connections
+          sleep 10
+
+          # Verify MinIO is accessible
+          echo "Testing MinIO connectivity..."
+          MINIO_POD=$(kubectl get pods -l app=minio -n devsecops-prod -o jsonpath='{.items[0].metadata.name}')
+          exec -n devsecops-prod "$MINIO_POD" -- \
+            /bin/sh -c "nc -zv localhost 9000" || echo "MinIO port check"
 
           # 2. Déployer les services applicatifs
           helm upgrade --install auth-service ./helm/auth-service \
@@ -391,12 +411,15 @@ jobs:
             --namespace devsecops-prod \
             --wait --timeout 180s
 
+          
           helm upgrade --install file-service-go ./helm/file-service \
             --namespace devsecops-prod \
             --set image.repository=file-service-go \
             --set image.tag=1.0.0 \
             --set image.pullPolicy=Never \
-            --wait --timeout 180s
+            --set minio.enabled=true \
+            --set minio.host=minio:9000 \
+            --wait --timeout 300s
 
           echo "✅ Services ready"
 
