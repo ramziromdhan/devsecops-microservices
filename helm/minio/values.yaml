@@ -1,9 +1,16 @@
 replicaCount: 1
 
 image:
-  repository: minio/minio
+  repository: quay.io/minio/minio
   tag: RELEASE.2024-12-18T13-15-44Z
   pullPolicy: IfNotPresent
+
+rootUser: "minioadmin"
+rootPassword: "minioadmin"
+
+persistence:
+  enabled: true
+  size: 5Gi
 
 service:
   type: ClusterIP
@@ -16,4 +23,4 @@ resources:
     memory: "256Mi"
   limits:
     cpu: "500m"
-    memory: "512Mi"
+    memory: "768Mi"
