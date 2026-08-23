@@ -377,7 +377,7 @@ jobs:
             --namespace devsecops-prod \
             --wait --timeout 180s
 
-          helm upgrade --install file-service-go ./helm/file-service-go \
+          helm upgrade --install file-service-go ./helm/file-service \
             --namespace devsecops-prod \
             --wait --timeout 120s
 
