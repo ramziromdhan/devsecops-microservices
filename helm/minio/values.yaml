@@ -2,11 +2,8 @@ replicaCount: 1
 
 image:
   repository: minio/minio
-  tag: RELEASE.2024-01-18T22-51-28Z
+  tag: RELEASE.2024-12-18T13-15-44Z
   pullPolicy: IfNotPresent
-
-rootUser: "minioadmin"
-rootPassword: "minioadmin"
 
 service:
   type: ClusterIP
@@ -15,8 +12,8 @@ service:
 
 resources:
   requests:
-    memory: "128Mi"
     cpu: "100m"
-  limits:
     memory: "256Mi"
-    cpu: "250m"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
