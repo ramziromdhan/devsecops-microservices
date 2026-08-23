@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: file-service
+  name: file-service-go
   namespace: devsecops-prod
   labels:
-    app: file-service
+    app: file-service-go
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: file-service
+      app: file-service-go
   template:
     metadata:
       labels:
-        app: file-service
+        app: file-service-go
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -24,7 +24,7 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: file-service
+        - name: file-service-go
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
