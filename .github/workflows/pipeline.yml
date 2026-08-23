@@ -71,7 +71,7 @@ jobs:
     needs: sast
     strategy:
       matrix:
-        service: [auth-service, app-service, file-service-go]
+        service: [auth-service, app-service, file-service]
     steps:
       - uses: actions/checkout@v4
 
@@ -105,7 +105,7 @@ jobs:
     needs: build
     strategy:
       matrix:
-        service: [auth-service, app-service, file-service-go]
+        service: [auth-service, app-service, file-service]
     steps:
       - uses: actions/checkout@v4
 
@@ -148,7 +148,7 @@ jobs:
           name: sca-${{ matrix.service }}-${{ github.sha }}
           path: sbom-${{ matrix.service }}.json
 
-  # ── Phase 3 : Cosign — Signature de l'image ───────────────────
+    # ── Phase 3 : Cosign — Signature de l'image ───────────────────
   sign:
     runs-on: ubuntu-latest
     needs: sca
@@ -230,7 +230,7 @@ jobs:
 
       - name: Kubesec — security scores
         run: |
-          for service in auth-service app-service file-service-go; do
+          for service in auth-service app-service file-service; do
             echo "=== Kubesec: $service ==="
             helm template $service ./helm/$service \
               --set image.pullPolicy=Never > /tmp/${service}-rendered.yaml
@@ -256,7 +256,7 @@ jobs:
           echo "## 🏗️ IaC Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Chart | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          for s in auth-service app-service file-service-go gateway; do
+          for s in auth-service app-service file-service gateway; do
             echo "| $s | ✅ |" >> $GITHUB_STEP_SUMMARY
           done
 
@@ -420,6 +420,7 @@ jobs:
           kubectl get events -n devsecops-prod \
             --sort-by='.lastTimestamp' | tail -20
 
+
       - name: Verify all pods running
         run: |
           echo "=== All pods status ==="
@@ -438,6 +439,14 @@ jobs:
             exit 1
           fi
           echo "✅ All pods running"
+
+      - name: Smoke tests
+        run: |
+          NODE_IP=$(kubectl get nodes \
+            -o jsonpath='{.items[0].status.addresses[0].address}')
+          echo "Gateway: http://$NODE_IP:30080"
+
+          # Attendre que le gateway soit
 
       - name: Wait for API Gateway
         run: |
@@ -566,7 +575,7 @@ jobs:
           echo "| Upload security  | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| ZAP DAST scan    | ✅ |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 6 : Runtime audit ────────────────────────────────────
+ # ── Phase 6 : Runtime audit ────────────────────────────────────
   runtime:
     runs-on: ubuntu-latest
     needs: deploy
@@ -609,6 +618,12 @@ jobs:
             --from-literal=JWT_SECRET_KEY="$JWT_KEY" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+          kubectl create secret generic file-service-go-secret \
+            --namespace devsecops-prod \
+            --from-literal=MINIO_ROOT_USER=minioadmin \
+            --from-literal=MINIO_ROOT_PASSWORD=minioadmin \
+            --dry-run=client -o yaml | kubectl apply -f -
+
           # Déployer uniquement pour kube-bench (pas besoin de l'app)
           helm upgrade --install network-policies \
             ./helm/network-policies -n devsecops-prod
@@ -646,7 +661,7 @@ jobs:
           echo "| kube-bench CIS | $PASS | $FAIL (k3s limitations) |" \
             >> $GITHUB_STEP_SUMMARY 
 
-  # ── Phase 7 : Falco — Runtime Security Test ───────────────────
+# ── Phase 7 : Falco — Runtime Security Test ───────────────────
   falco-test:
     runs-on: ubuntu-latest
     needs: deploy
@@ -760,7 +775,8 @@ jobs:
           grep -i "ALERTE\|Notice\|Critical\|Warning" /tmp/falco-events.log | head -5 >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 8 : DefectDojo Upload ────────────────────────────────
+          
+# ── Phase 8 : DefectDojo Upload ────────────────────────────────
   defectdojo-upload:
     runs-on: self-hosted       
     needs: [deploy, runtime]    
