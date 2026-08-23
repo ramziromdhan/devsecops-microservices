@@ -46,6 +46,11 @@ spec:
                 secretKeyRef:
                   name: file-service-go-secret
                   key: MINIO_ENDPOINT
+            - name: MINIO_PUBLIC_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: file-service-go-secret
+                  key: MINIO_PUBLIC_ENDPOINT
             - name: MINIO_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
