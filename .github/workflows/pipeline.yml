@@ -365,11 +365,6 @@ jobs:
           sleep 10
           echo "✅ Databases ready"
 
-      - name: Deploy MinIO
-        run: |
-          kubectl apply -f k8s/minio/ -n devsecops-prod
-          kubectl rollout status deployment/minio -n devsecops-prod --timeout=180s
-
       - name: Deploy application services
         run: |
           # Debug — voir ce que k3s a
@@ -378,6 +373,7 @@ jobs:
 
           # Vérifier que les secrets sont bien là
           kubectl get secrets -n devsecops-prod
+
 
           # 1. Déployer MinIO en premier pour que le DNS 'minio' existe
           helm upgrade --install minio ./helm/minio \
