@@ -378,6 +378,8 @@ jobs:
           # 1. Déployer MinIO en premier pour que le DNS 'minio' existe
           helm upgrade --install minio ./helm/minio \
             --namespace devsecops-prod \
+            --set rootUser=minioadmin \
+            --set rootPassword=$MINIO_PASS \
             --wait --timeout 180s
 
           # 2. Déployer les services applicatifs
