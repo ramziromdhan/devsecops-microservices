@@ -430,8 +430,6 @@ jobs:
                     command: ["kube-bench", "--benchmark", "rh-0.7"]
                     securityContext:
                       privileged: true
-                      runAsNonRoot: false
-                      allowPrivilegeEscalation: true
                     volumeMounts:
                       - name: var-lib-etcd
                         mountPath: /var/lib/etcd
