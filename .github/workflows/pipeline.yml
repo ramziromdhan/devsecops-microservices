@@ -430,9 +430,13 @@ jobs:
                     command: ["kube-bench", "--benchmark", "rh-0.7"]
                     securityContext:
                       privileged: true
-                      runAsNonRoot: true
-                      runAsUser: 10001
-                      allowPrivilegeEscalation: false
+                    volumeMounts:
+                      - name: var-lib-etcd
+                        mountPath: /var/lib/etcd
+                        readOnly: true
+                      - name: etc-kubernetes
+                        mountPath: /etc/kubernetes
+                        readOnly: true
                 volumes:
                   - name: var-lib-etcd
                     hostPath:
@@ -450,7 +454,6 @@ jobs:
           echo "kube-bench: $PASS PASS, $FAIL FAIL"
 
           oc delete job kube-bench -n devsecops-prod 2>/dev/null || true
-
       - name: Upload runtime reports
         if: always()
         uses: actions/upload-artifact@v4
