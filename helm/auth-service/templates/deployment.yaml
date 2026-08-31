@@ -21,6 +21,8 @@ spec:
         app: auth-service
     spec:
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: quay-registry-secret
       securityContext:
         runAsNonRoot: true
         seccompProfile:
