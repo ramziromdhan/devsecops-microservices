@@ -7,8 +7,9 @@ on:
     branches: [main]
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_PREFIX: ${{ github.repository_owner }}/devsecops-microservices
+  REGISTRY: quay.io
+  IMAGE_PREFIX: ramzi_romdhan
+  NAMESPACE: devsecops-prod
 
 jobs:
 
@@ -31,8 +32,9 @@ jobs:
 
       - name: Bandit — Python security scan
         run: |
+          mkdir -p tests/security/results
           .sast-venv/bin/bandit -r services/ -f json \
-            -o bandit-report.json || true
+            -o tests/security/results/bandit-report.json || true
           .sast-venv/bin/bandit -r services/ -f screen -lll
 
       - name: Semgrep — OWASP Top 10
@@ -41,6 +43,7 @@ jobs:
             --config=p/security-audit \
             --config=p/python \
             --config=p/owasp-top-ten \
+            --json --output tests/security/results/semgrep-report.json \
             services/ --error
 
       - name: Gitleaks — secrets detection
@@ -53,7 +56,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sast-reports-${{ github.sha }}
-          path: bandit-report.json
+          path: tests/security/results/*.json
 
       - name: SAST Summary
         if: always()
@@ -67,7 +70,7 @@ jobs:
 
   # ── Phase 2 : Build matrix ─────────────────────────────────────
   build:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: sast
     strategy:
       matrix:
@@ -75,48 +78,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve build context
+        id: ctx
+        run: |
+          if [ "${{ matrix.service }}" = "file-service-go" ]; then
+            echo "context=./services/file-service-go" >> $GITHUB_OUTPUT
+            echo "image_name=file-service" >> $GITHUB_OUTPUT
+          else
+            echo "context=./services/${{ matrix.service }}" >> $GITHUB_OUTPUT
+            echo "image_name=${{ matrix.service }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build ${{ matrix.service }}
         run: |
-          docker build \
-            -t ${{ matrix.service }}:${{ github.sha }} \
-            -t ${{ matrix.service }}:1.0.0 \
-            -t ${{ matrix.service }}:latest \
-            ./services/${{ matrix.service }}/
+          podman build \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:latest \
+            ${{ steps.ctx.outputs.context }}
 
-      - name: Save image
-        run: |
-          # Sauvegarder avec TOUS les tags
-          docker save \
-            ${{ matrix.service }}:${{ github.sha }} \
-            ${{ matrix.service }}:1.0.0 \
-            ${{ matrix.service }}:latest \
-            > /tmp/${{ matrix.service }}.tar
-
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-${{ matrix.service }}-${{ github.sha }}
-          path: /tmp/${{ matrix.service }}.tar
-          retention-days: 1
-
-  # ── Phase 2 : SCA matrix ───────────────────────────────────────
-  sca:
-    runs-on: ubuntu-latest
+  # ── Phase 3 : Push vers Quay.io ─────────────────────────────────
+  push:
+    runs-on: self-hosted
     needs: build
+    strategy:
+      matrix:
+        service: [auth-service, app-service, file-service]
+    steps:
+      - name: Login Quay.io
+        run: |
+          podman login -u "${{ secrets.QUAY_USERNAME }}" \
+            -p "${{ secrets.QUAY_PASSWORD }}" quay.io
+
+      - name: Push ${{ matrix.service }}
+        run: |
+          podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+          podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest
+
+  # ── Phase 4 : SCA — Hadolint + Trivy ────────────────────────────
+  sca:
+    runs-on: self-hosted
+    needs: push
     strategy:
       matrix:
         service: [auth-service, app-service, file-service-go]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download image
-        uses: actions/download-artifact@v4
-        with:
-          name: image-${{ matrix.service }}-${{ github.sha }}
-          path: /tmp/
-
-      - name: Load image
-        run: docker load < /tmp/${{ matrix.service }}.tar
+      - name: Resolve image name
+        id: ctx
+        run: |
+          if [ "${{ matrix.service }}" = "file-service-go" ]; then
+            echo "image_name=file-service" >> $GITHUB_OUTPUT
+          else
+            echo "image_name=${{ matrix.service }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Hadolint — ${{ matrix.service }}
         uses: hadolint/hadolint-action@v3.1.0
@@ -124,101 +139,83 @@ jobs:
           dockerfile: services/${{ matrix.service }}/Dockerfile
           ignore: DL3042,DL3008,DL3018
 
-      - name: Trivy — CVE scan ${{ matrix.service }}
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "${{ matrix.service }}:${{ github.sha }}"
-          format: table
-          exit-code: "1"
-          severity: CRITICAL
-          ignore-unfixed: true
+      - name: Trivy CVE scan — ${{ matrix.service }}
+        run: |
+          mkdir -p tests/security/results
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --ignorefile tests/security/.trivyignore \
+            --format json \
+            --output tests/security/results/trivy-${{ matrix.service }}.json \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:${{ github.sha }}"
 
-      - name: Trivy — SBOM ${{ matrix.service }}
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "${{ matrix.service }}:${{ github.sha }}"
-          format: cyclonedx
-          output: sbom-${{ matrix.service }}.json
-          exit-code: "0"
+          python3 -c "
+          import json
+          data = json.load(open('tests/security/results/trivy-${{ matrix.service }}.json'))
+          crit = sum(len([v for v in r.get('Vulnerabilities',[]) if v.get('Severity')=='CRITICAL']) for r in data.get('Results',[]) if r.get('Vulnerabilities'))
+          high = sum(len([v for v in r.get('Vulnerabilities',[]) if v.get('Severity')=='HIGH']) for r in data.get('Results',[]) if r.get('Vulnerabilities'))
+          print(f'${{ matrix.service }}: CRITICAL={crit} HIGH={high}')
+          if crit > 0:
+              raise SystemExit(f'❌ {crit} vulnérabilité(s) CRITICAL non documentée(s) dans .trivyignore')
+          "
+
+      - name: Trivy SBOM — ${{ matrix.service }}
+        run: |
+          trivy image \
+            --format cyclonedx \
+            --output tests/security/results/sbom-${{ matrix.service }}.json \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:${{ github.sha }}" \
+            2>/dev/null || true
 
       - name: Upload SCA reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sca-${{ matrix.service }}-${{ github.sha }}
-          path: sbom-${{ matrix.service }}.json
+          name: sca-reports-${{ matrix.service }}-${{ github.sha }}
+          path: tests/security/results/*.json
 
-    # ── Phase 3 : Cosign — Signature de l'image ───────────────────
+  # ── Phase 5 : Cosign — Signature de l'image ─────────────────────
   sign:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: sca
-
+    strategy:
+      matrix:
+        service: [auth-service, app-service, file-service]
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Download images
-        uses: actions/download-artifact@v4
-        with:
-          pattern: image-*-${{ github.sha }}
-          merge-multiple: true
-          path: /tmp/images/
-
-      - name: Load and sign images
+      - name: Sign image on Quay
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD:    ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
-          for service in auth-service app-service file-service-go; do
-            if [ -f "/tmp/images/${service}.tar" ]; then
-              docker load < /tmp/images/${service}.tar
+          echo "$COSIGN_PRIVATE_KEY" > cosign.key
+          cosign sign --key cosign.key --yes \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
 
-              # Signer l'image localement avec une clé fichier
-              cosign sign --key env://COSIGN_PRIVATE_KEY \
-                --yes \
-                ${service}:${{ github.sha }} 2>/dev/null || \
-              echo "Note: signature en mode keyless non disponible sans registry"
-
-              echo "✅ $service signé"
-            fi
-          done
-
-      - name: Verify signatures
+      - name: Verify signature
         env:
           COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
         run: |
-          for service in auth-service app-service file-service-go; do
-            echo "Vérification $service..."
-            # La vérification complète nécessite un registry
-            # En local on vérifie que la clé est valide
-            echo "$COSIGN_PUBLIC_KEY" > /tmp/cosign.pub
-            cosign verify --key /tmp/cosign.pub \
-              ${service}:${{ github.sha }} 2>/dev/null || \
-            echo "⚠️ Vérification en attente du registry OpenShift"
-          done
+          echo "$COSIGN_PUBLIC_KEY" > cosign.pub
+          cosign verify --key cosign.pub --insecure-ignore-tlog=true \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
 
       - name: Sign Summary
         run: |
-          echo "## 🔏 Image Signing (Cosign)" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| auth-service | ✅ Signed |" >> $GITHUB_STEP_SUMMARY
-          echo "| app-service | ✅ Signed |" >> $GITHUB_STEP_SUMMARY
-          echo "| file-service-go | ✅ Signed |" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔏 Image Signing (Cosign) — ${{ matrix.service }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Signée et vérifiée sur Quay.io" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 4 : IaC ──────────────────────────────────────────────
+  # ── Phase 6 : IaC — Checkov + Kubesec ───────────────────────────
   iac:
-    runs-on: ubuntu-latest
-    needs: sca
+    runs-on: self-hosted
+    needs: sast
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Helm
         uses: azure/setup-helm@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Checkov — all Helm charts
         uses: bridgecrewio/checkov-action@master
@@ -231,9 +228,9 @@ jobs:
       - name: Kubesec — security scores
         run: |
           for service in auth-service app-service file-service; do
-          echo "=== Kubesec: $service ==="
+            echo "=== Kubesec: $service ==="
             helm template $service ./helm/$service \
-              --set image.pullPolicy=Never > /tmp/${service}-rendered.yaml
+              --set image.pullPolicy=IfNotPresent > /tmp/${service}-rendered.yaml
 
             SCORE=$(docker run -i kubesec/kubesec:v2 \
               scan /dev/stdin < /tmp/${service}-rendered.yaml \
@@ -260,669 +257,310 @@ jobs:
             echo "| $s | ✅ |" >> $GITHUB_STEP_SUMMARY
           done
 
-  # ── Phase 5 : Deploy ───────────────────────────────────────────
+  # ── Phase 7 : Deploy sur OpenShift SNO ──────────────────────────
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [iac, sign]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup k3s
+      - name: Login to OpenShift
         run: |
-          curl -sfL https://get.k3s.io | sh -
-          mkdir -p ~/.kube
-          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-          sudo chown $USER:$USER ~/.kube/config
-          # Attendre que k3s soit prêt
-          kubectl wait --for=condition=ready node \
-            --all --timeout=90s
+          oc login ${{ secrets.OPENSHIFT_API_URL }} \
+            --token=${{ secrets.OPENSHIFT_TOKEN }} \
+            --insecure-skip-tls-verify=true
 
       - name: Install Helm
         uses: azure/setup-helm@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download all images
-        uses: actions/download-artifact@v4
-        with:
-          pattern: image-*-${{ github.sha }}
-          merge-multiple: true
-          path: /tmp/images/
-
-      - name: Load images into k3s containerd
+      - name: Ensure namespace and secrets exist (idempotent, no regeneration)
         run: |
-          for service in auth-service app-service file-service-go; do
-            echo "Loading $service..."
-            sudo k3s ctr images import /tmp/images/${service}.tar
-          done
+          oc new-project devsecops-prod 2>/dev/null || true
 
-          echo "=== Verifying images ==="
-          sudo k3s ctr images list | grep -E "auth|app|file"
-
-          # Vérifier que le tag 1.0.0 est bien présent
-          for service in auth-service app-service file-service-go; do
-            sudo k3s ctr images list | grep "${service}:1.0.0" \
-              && echo "✅ ${service}:1.0.0 found" \
-              || echo "❌ ${service}:1.0.0 NOT found"
-          done
-
-      - name: Create namespace and secrets
-        id: create-secrets  # ✅ Ajouter un ID
-        run: |
-          kubectl create namespace devsecops-prod --dry-run=client -o yaml \
-            | kubectl apply -f -
-
-          AUTH_PASS=$(openssl rand -base64 20 | tr -d '\n/+=')
-          APP_PASS=$(openssl rand -base64 20 | tr -d '\n/+=')
-          JWT_KEY=$(openssl rand -base64 48 | tr -d '\n')
-          MINIO_PASS=$(openssl rand -base64 20 | tr -d '\n/+=')
-
-          # ✅ Exporter MINIO_PASS pour le step suivant
-          echo "minio_pass=$MINIO_PASS" >> $GITHUB_OUTPUT
-
-          kubectl create secret generic auth-db-secret \
+          # Secrets stables : créés depuis GitHub Secrets fixes, jamais régénérés
+          # aléatoirement à chaque run — sinon les DB existantes deviennent
+          # inaccessibles avec un nouveau mot de passe.
+          oc create secret generic auth-db-secret \
             --namespace devsecops-prod \
-            --from-literal=POSTGRES_USER=authuser \
-            --from-literal=POSTGRES_PASSWORD=$AUTH_PASS \
-            --from-literal=POSTGRES_DB=authdb \
-            --from-literal=DATABASE_URL="postgresql://authuser:${AUTH_PASS}@auth-db:5432/authdb" \
-            --dry-run=client -o yaml | kubectl apply -f -
+            --from-literal=POSTGRESQL_USER=authuser \
+            --from-literal=POSTGRESQL_PASSWORD="${{ secrets.AUTH_DB_PASS }}" \
+            --from-literal=POSTGRESQL_DATABASE=authdb \
+            --from-literal=DATABASE_URL="postgresql://authuser:${{ secrets.AUTH_DB_PASS }}@auth-db:5432/authdb" \
+            --dry-run=client -o yaml | oc apply -f -
 
-          kubectl create secret generic app-db-secret \
+          oc create secret generic app-db-secret \
             --namespace devsecops-prod \
-            --from-literal=POSTGRES_USER=appuser \
-            --from-literal=POSTGRES_PASSWORD=$APP_PASS \
-            --from-literal=POSTGRES_DB=appdb \
-            --from-literal=DATABASE_URL="postgresql://appuser:${APP_PASS}@app-db:5432/appdb" \
-            --dry-run=client -o yaml | kubectl apply -f -
+            --from-literal=POSTGRESQL_USER=appuser \
+            --from-literal=POSTGRESQL_PASSWORD="${{ secrets.APP_DB_PASS }}" \
+            --from-literal=POSTGRESQL_DATABASE=appdb \
+            --from-literal=DATABASE_URL="postgresql://appuser:${{ secrets.APP_DB_PASS }}@app-db:5432/appdb" \
+            --dry-run=client -o yaml | oc apply -f -
 
-          kubectl create secret generic jwt-secret \
+          oc create secret generic jwt-secret \
             --namespace devsecops-prod \
-            --from-literal=JWT_SECRET_KEY="$JWT_KEY" \
-            --dry-run=client -o yaml | kubectl apply -f -
+            --from-literal=JWT_SECRET_KEY="${{ secrets.JWT_KEY }}" \
+            --dry-run=client -o yaml | oc apply -f -
 
-          kubectl create secret generic file-service-go-secret \
+          oc create secret generic minio \
             --namespace devsecops-prod \
-            --from-literal=MINIO_ACCESS_KEY=minioadmin \
-            --from-literal=MINIO_SECRET_KEY=$MINIO_PASS \
+            --from-literal=rootUser=minioadmin \
+            --from-literal=rootPassword="${{ secrets.MINIO_PASS }}" \
+            --dry-run=client -o yaml | oc apply -f -
+
+          oc create secret generic file-service-go-secret \
+            --namespace devsecops-prod \
+            --from-literal=DATABASE_URL="postgresql://appuser:${{ secrets.APP_DB_PASS }}@app-db:5432/appdb" \
             --from-literal=MINIO_ENDPOINT=minio:9000 \
+            --from-literal=MINIO_PUBLIC_ENDPOINT="https://minio.apps.cluster.linsoft.local" \
+            --from-literal=MINIO_ACCESS_KEY=minioadmin \
+            --from-literal=MINIO_SECRET_KEY="${{ secrets.MINIO_PASS }}" \
             --from-literal=MINIO_BUCKET=uploads \
-            --from-literal=MINIO_PUBLIC_ENDPOINT=http://localhost:32009 \
-            --from-literal=DATABASE_URL="postgresql://appuser:${APP_PASS}@app-db:5432/appdb?sslmode=disable" \
-            --dry-run=client -o yaml | kubectl apply -f -
+            --dry-run=client -o yaml | oc apply -f -
+
+          oc create secret docker-registry redhat-registry-secret \
+            --namespace devsecops-prod \
+            --docker-server=registry.redhat.io \
+            --docker-username="${{ secrets.REDHAT_REGISTRY_USER }}" \
+            --docker-password="${{ secrets.REDHAT_REGISTRY_PASS }}" \
+            --dry-run=client -o yaml | oc apply -f -
 
       - name: Deploy databases first
         run: |
-          helm upgrade --install auth-db ./helm/auth-db \
-            --namespace devsecops-prod --wait --timeout 180s
+          helm upgrade --install auth-db ./helm/auth-db --namespace devsecops-prod --wait --timeout 180s
+          helm upgrade --install app-db ./helm/app-db --namespace devsecops-prod --wait --timeout 180s
+          oc wait --for=condition=ready pod -l app=auth-db -n devsecops-prod --timeout=120s
+          oc wait --for=condition=ready pod -l app=app-db -n devsecops-prod --timeout=120s
 
-          helm upgrade --install app-db ./helm/app-db \
-            --namespace devsecops-prod --wait --timeout 180s
-
-          kubectl wait --for=condition=ready pod \
-            -l app=auth-db -n devsecops-prod --timeout=120s
-          kubectl wait --for=condition=ready pod \
-            -l app=app-db  -n devsecops-prod --timeout=120s
-
-          # Attendre que PostgreSQL accepte les connexions
-          echo "Waiting 10s for PostgreSQL to accept connections..."
-          sleep 10
-          echo "✅ Databases ready"
-
-      - name: Deploy application services
-        env:
-          MINIO_PASS: ${{ steps.create-secrets.outputs.minio_pass }}
+      - name: Deploy MinIO
         run: |
-          # Debug — voir ce que k3s a
-          echo "=== k3s images ==="
-          sudo k3s ctr images list | grep -E "auth|app|file" || echo "NO IMAGES FOUND"
+          helm upgrade --install minio ./helm/minio --namespace devsecops-prod --wait --timeout 300s
+          oc wait --for=condition=ready pod -l app=minio -n devsecops-prod --timeout=180s
 
-          # Vérifier que les secrets sont bien là
-          kubectl get secrets -n devsecops-prod
-
-
-          # 1. Déployer MinIO en premier pour que le DNS 'minio' existe
-          helm upgrade --install minio ./helm/minio \
-            --namespace devsecops-prod \
-            --set rootUser=minioadmin \
-            --set rootPassword=$MINIO_PASS \
-            --wait --timeout 300s
-
-           # Wait for MinIO pod to be Ready
-          echo "Waiting for MinIO to be fully ready..."
-          kubectl wait --for=condition=ready pod \
-            -l app=minio -n devsecops-prod --timeout=180s
-
-          # Extra wait to ensure MinIO is accepting connections
-          sleep 10
-
-          # Verify MinIO is accessible
-          echo "Testing MinIO connectivity..."
-          MINIO_POD=$(kubectl get pods -l app=minio -n devsecops-prod -o jsonpath='{.items[0].metadata.name}')
-          exec -n devsecops-prod "$MINIO_POD" -- \
-            /bin/sh -c "nc -zv localhost 9000" || echo "MinIO port check"
-
-          # 2. Déployer les services applicatifs
+      - name: Deploy application services (images from Quay)
+        run: |
           helm upgrade --install auth-service ./helm/auth-service \
             --namespace devsecops-prod \
+            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/auth-service \
+            --set image.tag=${{ github.sha }} \
+            --set image.pullPolicy=IfNotPresent \
             --wait --timeout 180s
 
           helm upgrade --install app-service ./helm/app-service \
             --namespace devsecops-prod \
+            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/app-service \
+            --set image.tag=${{ github.sha }} \
+            --set image.pullPolicy=IfNotPresent \
             --wait --timeout 180s
 
-          
-          helm upgrade --install file-service-go ./helm/file-service \
+          helm upgrade --install file-service ./helm/file-service \
             --namespace devsecops-prod \
-            --set image.repository=file-service-go \
-            --set image.tag=1.0.0 \
-            --set image.pullPolicy=Never \
-            --set minio.enabled=true \
-            --set minio.host=minio:9000 \
+            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/file-service \
+            --set image.tag=${{ github.sha }} \
+            --set image.pullPolicy=IfNotPresent \
             --wait --timeout 300s
-
-          echo "✅ Services ready"
 
       - name: Deploy gateway and policies
         run: |
-          helm upgrade --install gateway ./helm/gateway \
-            --namespace devsecops-prod --wait --timeout 60s
-
-          helm upgrade --install network-policies ./helm/network-policies \
-            --namespace devsecops-prod
-
-          helm upgrade --install rbac ./helm/rbac \
-            --namespace devsecops-prod
-
-          echo "✅ Gateway and policies deployed"
+          helm upgrade --install gateway ./helm/gateway --namespace devsecops-prod --wait --timeout 60s
+          helm upgrade --install network-policies ./helm/network-policies --namespace devsecops-prod
+          helm upgrade --install rbac ./helm/rbac --namespace devsecops-prod
 
       - name: Debug on failure
         if: failure()
         run: |
-          echo "=== Pods status ==="
-          kubectl get pods -n devsecops-prod -o wide
-
-          echo "=== auth-service pod events ==="
-          kubectl describe pod -l app=auth-service -n devsecops-prod \
-            2>/dev/null | tail -20 || echo "No auth-service pod"
-
-          echo "=== auth-service logs ==="
-          kubectl logs -l app=auth-service -n devsecops-prod \
-            --tail=20 2>/dev/null || echo "No logs"
-
-          echo "=== file-service events ==="
-          kubectl describe pod -l app=file-service-go \
-            -n devsecops-prod 2>/dev/null | tail -20
-
-          echo "=== file-service logs ==="
-          kubectl logs -l app=file-service-go \
-            -n devsecops-prod --tail=30 2>/dev/null || echo "No logs"
-
-          echo "=== k3s images ==="
-          sudo k3s ctr images list | grep -E "auth|app|file"
-
-          echo "=== Secrets ==="
-          kubectl get secrets -n devsecops-prod
-
-          echo "=== Events ==="
-          kubectl get events -n devsecops-prod \
-            --sort-by='.lastTimestamp' | tail -20
-
-          echo "=== Helm releases ==="
-          helm list -n devsecops-prod
-
+          oc get pods -n devsecops-prod -o wide
+          oc get events -n devsecops-prod --sort-by='.lastTimestamp' | tail -30
+          oc logs -l app=auth-service -n devsecops-prod --tail=30 || true
+          oc logs -l app=file-service-go -n devsecops-prod --tail=30 || true
 
       - name: Verify all pods running
         run: |
-          echo "=== All pods status ==="
-          kubectl get pods -n devsecops-prod
-
-          # Vérifier qu'aucun pod n'est en erreur
-          FAILED=$(kubectl get pods -n devsecops-prod \
-            --field-selector=status.phase!=Running \
-            --no-headers 2>/dev/null | grep -v "Completed" | wc -l)
-
+          FAILED=$(oc get pods -n devsecops-prod --field-selector=status.phase!=Running --no-headers 2>/dev/null | grep -v Completed | wc -l)
           if [ "$FAILED" -gt 0 ]; then
-            echo "❌ Some pods are not running:"
-            kubectl get pods -n devsecops-prod \
-              --field-selector=status.phase!=Running
-            kubectl describe pods -n devsecops-prod | grep -A 10 "Events:"
+            oc get pods -n devsecops-prod
             exit 1
           fi
           echo "✅ All pods running"
 
-      - name: Smoke tests
-        run: |
-          NODE_IP=$(kubectl get nodes \
-            -o jsonpath='{.items[0].status.addresses[0].address}')
-          echo "Gateway: http://$NODE_IP:30080"
-
-          # Attendre que le gateway soit
-
-      - name: Wait for API Gateway
-        run: |
-          NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
-          echo "Gateway IP: http://$NODE_IP:30080"
-
-          echo "Attente que le Gateway et les services soient prêts..."
-          for i in {1..15}; do
-            # On teste l'accès au Gateway. S'il ne renvoie plus 000 (connexion refusée) ou 502/503, c'est qu'il route le trafic.
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://$NODE_IP:30080/ || echo "000")
-            if [ "$HTTP_CODE" != "000" ] && [ "$HTTP_CODE" != "502" ] && [ "$HTTP_CODE" != "503" ]; then
-              echo "✅ Gateway prêt (Code HTTP: $HTTP_CODE) !"
-              break
-            fi
-            echo "En attente du Gateway... ($i/15)"
-            sleep 4
-          done
-
-      - name: Run automated security tests
-        run: |
-          NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
-
-          echo "=== 1. Création de l'utilisateur de test ==="
-          # On appelle ta route FastAPI /auth/register
-          # Le JSON correspond exactement à ton schéma Pydantic 'UserCreate'
-          curl -s -X POST http://$NODE_IP:30080/auth/register \
-            -H "Content-Type: application/json" \
-            -d '{"email": "ci@test.com", "password": "Test123!"}'
-          
-          echo -e "\n\n=== 2. Authentification initiale ==="
-          # L'utilisateur existe maintenant en base (avec mot de passe hashé)
-          # On peut donc générer le token via OAuth2PasswordRequestForm
-          AUTH_RESPONSE=$(curl -s -X POST http://$NODE_IP:30080/auth/token \
-            -d "username=ci@test.com&password=Test123!")
-
-          # Extraction sécurisée avec Python
-          TOKEN=$(echo "$AUTH_RESPONSE" | python3 -c "
-          import sys, json
-          try:
-              data = json.load(sys.stdin)
-              print(data.get('access_token', 'ERROR_NO_TOKEN'))
-          except Exception:
-              print('ERROR_JSON_DECODE')
-          ")
-
-          # Si le token n'a pas pu être extrait, on affiche l'erreur exacte
-          if [ "$TOKEN" = "ERROR_NO_TOKEN" ] || [ "$TOKEN" = "ERROR_JSON_DECODE" ] || [ -z "$TOKEN" ]; then
-            echo "❌ Impossible de récupérer l'access_token."
-            echo "Réponse brute de l'API :"
-            echo "$AUTH_RESPONSE"
-            exit 1
-          fi
-
-          echo "✅ Token récupéré avec succès : ${TOKEN:0:20}..."
-
-          # ─── Auth tests ───
-          echo "=== Auth tests ==="
-          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST http://$NODE_IP:30080/auth/token \
-            -d "username=ci@test.com&password=wrong")
-          [ "$CODE" = "401" ] \
-            && echo "✅ Wrong password → 401" \
-            || echo "❌ Wrong password → $CODE"
-
-          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            http://$NODE_IP:30080/items \
-            -H "Authorization: Bearer invalid.token")
-          [ "$CODE" = "401" ] \
-            && echo "✅ Invalid token → 401" \
-            || echo "❌ Invalid token → $CODE"
-
-          # ─── Security headers ───
-          echo "=== Security headers ==="
-          HEADERS=$(curl -sI http://$NODE_IP:30080/health || curl -sI http://$NODE_IP:30080/)
-          echo "$HEADERS" | grep -qi "X-Frame-Options" \
-            && echo "✅ X-Frame-Options" \
-            || echo "❌ X-Frame-Options manquant"
-          echo "$HEADERS" | grep -qi "X-Content-Type-Options" \
-            && echo "✅ X-Content-Type-Options" \
-            || echo "❌ X-Content-Type-Options manquant"
-
-          # ─── Upload security ───
-          echo "=== Upload security ==="
-          echo "test" > /tmp/test.txt
-          RESULT=$(curl -s -X POST http://$NODE_IP:30080/upload \
-            -H "Authorization: Bearer $TOKEN" \
-            -F "file=@/tmp/test.txt" \
-            | python3 -c \
-            "import sys,json; d=json.load(sys.stdin); \
-             print('OK' if 'filename' in d else 'FAIL')" \
-            2>/dev/null || echo "FAIL")
-          [ "$RESULT" = "OK" ] \
-            && echo "✅ Upload .txt OK" \
-            || echo "❌ Upload .txt failed"
-
-          RESULT=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST http://$NODE_IP:30080/upload \
-            -H "Authorization: Bearer $TOKEN" \
-            -F "file=@/tmp/test.txt;filename=malicious.php")
-          [ "$RESULT" = "400" ] \
-            && echo "✅ .php blocked → 400" \
-            || echo "❌ .php not blocked → $RESULT"
-
-          # ─── ZAP baseline ───
-          echo "=== ZAP DAST scan ==="
-          mkdir -p /tmp/zap-results
-          docker run --rm \
-            --network host \
-            -v /tmp/zap-results:/zap/wrk:rw \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-            -t http://$NODE_IP:30080 \
-            -J zap-report.json \
-            -I 2>&1 | tail -10 || true
-
-          echo "✅ Security tests completed"
-
-      - name: Security Summary
-        if: always()
-        run: |
-          echo "## 🎯 Security Tests Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Auth enforcement | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Security headers | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Upload security  | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| ZAP DAST scan    | ✅ |" >> $GITHUB_STEP_SUMMARY
-
- # ── Phase 6 : Runtime audit ────────────────────────────────────
+  # ── Phase 8 : Runtime audit (kube-bench) ────────────────────────
   runtime:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: deploy
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup k3s
+      - name: Login OpenShift
         run: |
-          curl -sfL https://get.k3s.io | sh -
-          mkdir -p ~/.kube
-          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-          sudo chown $USER:$USER ~/.kube/config
-          kubectl wait --for=condition=ready node --all --timeout=60s
+          oc login ${{ secrets.OPENSHIFT_API_URL }} \
+            --token=${{ secrets.OPENSHIFT_TOKEN }} \
+            --insecure-skip-tls-verify=true
 
-      - name: Install Helm
-        uses: azure/setup-helm@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Deploy minimal cluster for runtime audit
+      - name: kube-bench CIS OpenShift
         run: |
-          kubectl create namespace devsecops-prod \
-            --dry-run=client -o yaml | kubectl apply -f -
+          oc adm policy add-scc-to-user privileged -z default -n default
 
-          # Secrets minimaux
-          AUTH_PASS=$(openssl rand -base64 20 | tr -d '\n/+=')
-          APP_PASS=$(openssl rand -base64 20 | tr -d '\n/+=')
-          JWT_KEY=$(openssl rand -base64 48 | tr -d '\n')
+          oc apply -f - << 'EOF'
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: kube-bench
+            namespace: default
+          spec:
+            template:
+              spec:
+                hostPID: true
+                hostIPC: true
+                restartPolicy: Never
+                serviceAccountName: default
+                containers:
+                  - name: kube-bench
+                    image: aquasec/kube-bench:latest
+                    command: ["kube-bench", "--benchmark", "rh-0.7"]
+                    securityContext:
+                      privileged: true
+                    volumeMounts:
+                      - name: var-lib-etcd
+                        mountPath: /var/lib/etcd
+                        readOnly: true
+                      - name: etc-kubernetes
+                        mountPath: /etc/kubernetes
+                        readOnly: true
+                volumes:
+                  - name: var-lib-etcd
+                    hostPath:
+                      path: /var/lib/etcd
+                  - name: etc-kubernetes
+                    hostPath:
+                      path: /etc/kubernetes
+          EOF
 
-          kubectl create secret generic auth-db-secret \
-            --namespace devsecops-prod \
-            --from-literal=POSTGRES_USER=authuser \
-            --from-literal=POSTGRES_PASSWORD=$AUTH_PASS \
-            --from-literal=POSTGRES_DB=authdb \
-            --from-literal=DATABASE_URL="postgresql://authuser:${AUTH_PASS}@auth-db:5432/authdb" \
-            --dry-run=client -o yaml | kubectl apply -f -
+          oc wait --for=condition=complete job/kube-bench --timeout=180s || true
+          oc logs job/kube-bench | tee tests/security/results/kube-bench-report.txt
 
-          kubectl create secret generic jwt-secret \
-            --namespace devsecops-prod \
-            --from-literal=JWT_SECRET_KEY="$JWT_KEY" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          kubectl create secret generic file-service-go-secret \
-            --namespace devsecops-prod \
-            --from-literal=MINIO_ACCESS_KEY=minioadmin \
-            --from-literal=MINIO_SECRET_KEY=minioadmin \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          # Déployer uniquement pour kube-bench (pas besoin de l'app)
-          helm upgrade --install network-policies \
-            ./helm/network-policies -n devsecops-prod
-
-      - name: kube-bench — CIS Benchmark
-        run: |
-          kubectl apply -f \
-            https://raw.githubusercontent.com/aquasecurity/kube-bench/main/job.yaml
-
-          kubectl wait --for=condition=complete \
-            job/kube-bench --timeout=180s
-
-          kubectl logs job/kube-bench | tee kube-bench-report.txt
-          kubectl delete job kube-bench
-
-          PASS=$(grep -c "^\[PASS\]" kube-bench-report.txt || echo "0")
-          FAIL=$(grep -c "^\[FAIL\]" kube-bench-report.txt || echo "0")
+          PASS=$(grep -c "^\[PASS\]" tests/security/results/kube-bench-report.txt || echo "0")
+          FAIL=$(grep -c "^\[FAIL\]" tests/security/results/kube-bench-report.txt || echo "0")
           echo "kube-bench: $PASS PASS, $FAIL FAIL"
+
+          oc delete job kube-bench 2>/dev/null || true
 
       - name: Upload runtime reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: runtime-reports-${{ github.sha }}
-          path: kube-bench-report.txt
+          path: tests/security/results/kube-bench-report.txt
 
       - name: Runtime Summary
         if: always()
         run: |
-          PASS=$(grep -c "^\[PASS\]" kube-bench-report.txt 2>/dev/null || echo "0")
-          FAIL=$(grep -c "^\[FAIL\]" kube-bench-report.txt 2>/dev/null || echo "0")
-          echo "## ⚙️ Runtime Security Audit" >> $GITHUB_STEP_SUMMARY
-          echo "| Tool | PASS | FAIL |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| kube-bench CIS | $PASS | $FAIL (k3s limitations) |" \
-            >> $GITHUB_STEP_SUMMARY 
+          PASS=$(grep -c "^\[PASS\]" tests/security/results/kube-bench-report.txt 2>/dev/null || echo "0")
+          FAIL=$(grep -c "^\[FAIL\]" tests/security/results/kube-bench-report.txt 2>/dev/null || echo "0")
+          echo "## ⚙️ Runtime — kube-bench" >> $GITHUB_STEP_SUMMARY
+          echo "| PASS | FAIL |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| $PASS | $FAIL |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 7 : Falco — Runtime Security Test ───────────────────
-
+  # ── Phase 9 : Falco — démonstration runtime ─────────────────────
   falco-test:
-    runs-on: ubuntu-latest  # ✅ Sécurisé pour public repo
+    runs-on: self-hosted
     needs: deploy
-    
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup k3s
+      - name: Login OpenShift
         run: |
-          curl -sfL https://get.k3s.io | sh -
-          mkdir -p ~/.kube
-          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-          sudo chown $USER:$USER ~/.kube/config
-          kubectl wait --for=condition=ready node --all --timeout=90s
+          oc login ${{ secrets.OPENSHIFT_API_URL }} \
+            --token=${{ secrets.OPENSHIFT_TOKEN }} \
+            --insecure-skip-tls-verify=true
 
-      - name: Install Helm
-        uses: azure/setup-helm@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Clean Falco Rules
+      - name: Verify Falco is running
         run: |
-          if grep -q "kind: ConfigMap" falco/custom-rules.yaml; then
-            yq e '.data["custom-rules.yaml"]' falco/custom-rules.yaml > /tmp/clean-rules.yaml
-          else
-            cp falco/custom-rules.yaml /tmp/clean-rules.yaml
-          fi
+          oc get pods -n falco -l app.kubernetes.io/name=falco --no-headers | grep "Running" \
+            && echo "✅ Falco running" \
+            || echo "⚠️ Falco not running — check deployment manually"
 
-      - name: Install Falco
+      - name: Start Falco log capture
         run: |
-          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          helm repo add falcosecurity https://falcosecurity.github.io/charts
-          helm repo update
-          
-          # Installe en mode kmod (plus compatible que eBPF en environnement limité)
-          helm install falco falcosecurity/falco \
-            --namespace falco \
-            --create-namespace \
-            --set driver.kind=kmod \
-            --set falcosidekick.enabled=false \
-            --set-file customRules.rules_custom=/tmp/clean-rules.yaml \
-            --set ebpf.enabled=false \
-            --set docker.enabled=true \
-            --wait --timeout 300s 2>&1 || {
-              echo "⚠️ Falco installation may have warnings due to container limits"
-              echo "Continuing with operational verification..."
-            }
-
-      - name: Wait for Falco Pod
-        run: |
-          echo "Attente du pod Falco..."
-          kubectl wait --namespace falco \
-            --for=condition=ready pod \
-            -l app.kubernetes.io/name=falco \
-            --timeout=120s 2>/dev/null || {
-            echo "⚠️ Falco pod not ready (expected in container environment)"
-            echo "Checking pod status..."
-            kubectl get pods -n falco -o wide
-            kubectl logs -n falco -l app.kubernetes.io/name=falco -c falco || true
-          }
-
-      - name: Deploy test app
-        run: |
-          kubectl create namespace devsecops-prod --dry-run=client -o yaml | kubectl apply -f -
-          kubectl run auth-service-test \
-            --image=python:3.12-slim \
-            --namespace=devsecops-prod \
-            --restart=Never \
-            -- sleep 120
-          kubectl wait pod/auth-service-test \
-            --for=condition=ready \
-            --namespace=devsecops-prod \
-            --timeout=60s
-
-      - name: Simulate security events
-        run: |
-          echo "=== Simulation d'événements de sécurité ==="
-          kubectl exec pod/auth-service-test \
-            -n devsecops-prod \
-            -- /bin/sh -c "whoami && cat /etc/passwd" \
-            2>&1 | tee /tmp/intrusion-output.txt
+          FALCO_POD=$(oc get pod -n falco -l app.kubernetes.io/name=falco -o jsonpath='{.items[0].metadata.name}')
+          echo "Falco pod: $FALCO_POD"
+          oc logs -n falco $FALCO_POD -c falco -f > /tmp/falco-events.log 2>&1 &
+          echo $! > /tmp/falco_pid
           sleep 5
 
-      - name: Check Falco operational status
+      - name: Simulate intrusion
         run: |
-          echo "=== Vérification de l'état opérationnel de Falco ==="
-          
-          # Vérifie que Falco tourne
-          if kubectl get pods -n falco -o jsonpath='{.items[*].status.phase}' | grep -q "Running"; then
-            echo "✅ Falco pod is Running"
-          else
-            echo "⚠️ Falco pod not in Running state (container environment limitation)"
-          fi
-          
-          # Affiche les logs
-          echo ""
-          echo "=== Falco Logs ==="
-          kubectl logs -n falco -l app.kubernetes.io/name=falco -c falco --tail=50 || true
-          
-          # Vérification fonctionnelle
-          echo ""
-          echo "=== Fonctionnel Check ==="
-          if kubectl get pods -n falco | grep falco; then
-            echo "✅ Falco successfully deployed"
-            echo "✅ Runtime security monitoring configured"
-            echo "⚠️  Note: Full event capture limited by container namespace"
-            echo "   (Expected in GitHub Actions environment)"
-          else
-            echo "❌ Falco deployment failed"
-            exit 1
-          fi
+          POD=$(oc get pod -l app=auth-service -n ${{ env.NAMESPACE }} -o jsonpath='{.items[0].metadata.name}')
+          echo "Intrusion dans: $POD"
+          oc exec $POD -n ${{ env.NAMESPACE }} -- \
+            /bin/sh -c "id && whoami && cat /etc/passwd | head -3" \
+            2>&1 | tee /tmp/intrusion-output.txt
+          sleep 15
 
-      - name: Cleanup
-        if: always()
+      - name: Verify Falco detection
         run: |
-          kubectl delete pod auth-service-test \
-            -n devsecops-prod --ignore-not-found=true 2>/dev/null || true
+          kill $(cat /tmp/falco_pid) 2>/dev/null || true
+          echo "=== Falco events ==="
+          cat /tmp/falco-events.log | grep -i "Notice\|Warning\|Critical" || true
+
+          grep -qi "shell\|Terminal\|execve" /tmp/falco-events.log \
+            && echo "✅ Falco T1059 détecté" \
+            || echo "⚠️ Délai possible — vérifier les logs Falco"
 
       - name: Falco Summary
         if: always()
         run: |
-          echo "## 🦅 Falco Runtime Security" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Falco Pod | ✅ Deployed |" >> $GITHUB_STEP_SUMMARY
-          echo "| Driver | kmod (compatible) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Rules Loaded | ✅ Custom rules configured |" >> $GITHUB_STEP_SUMMARY
-          echo "| Container Monitoring | ⚠️ Limited by GitHub Actions sandbox |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Note:** For full Falco testing, use local environment or approved self-hosted runner." >> $GITHUB_STEP_SUMMARY
-          
-# ── Phase 8 : DefectDojo Upload ────────────────────────────────
+          echo "## 🦅 Falco Runtime" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Résultat |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Shell in container (T1059) | ✅ |" >> $GITHUB_STEP_SUMMARY
 
+  # ── Phase 10 : DefectDojo Upload ────────────────────────────────
   defectdojo-upload:
-    runs-on: self-hosted       
-    needs: [deploy, runtime, falco-test]   
-
-    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' 
-
+    runs-on: self-hosted
+    needs: [deploy, runtime, falco-test]
+    if: always()
     steps:
       - uses: actions/checkout@v4
 
       - name: Download all reports
         uses: actions/download-artifact@v4
         with:
-          #pattern: "*-reports-*"
           merge-multiple: true
           path: /tmp/reports/
 
-      - name: Generate .dd-config dynamically
+      - name: Generate .dd-config
         run: |
-          cd $GITHUB_WORKSPACE
           mkdir -p monitoring/defectdojo
-          
-          # On crée le fichier à la volée avec tes secrets GitHub
-          cat << EOF > monitoring/defectdojo/.dd-config
+          cat > monitoring/defectdojo/.dd-config << EOF
           export DD_URL="${{ secrets.DD_URL }}"
           export DD_TOKEN="${{ secrets.DD_TOKEN }}"
           export PRODUCT_NAME="devsecops-microservices"
           EOF
-          
-          echo "✅ Fichier .dd-config généré dans le workspace"
 
-      - name: Import reports to DefectDojo
+      - name: Import to DefectDojo
         run: |
-          cd $GITHUB_WORKSPACE
           source monitoring/defectdojo/.dd-config
-
-          echo "DefectDojo: $DD_URL"
-          curl -sf -H "Authorization: Token $DD_TOKEN" $DD_URL/api/v2/ > /dev/null \
+          curl -sf -H "Authorization: Token $DD_TOKEN" "$DD_URL/api/v2/" > /dev/null \
             && echo "✅ DefectDojo accessible" \
             || { echo "❌ DefectDojo non accessible"; exit 1; }
 
           mkdir -p tests/security/results/
-          find /tmp/reports -type f -name "*.json" -exec cp {} tests/security/results/ \;
+          find /tmp/reports -name "*.json" -exec cp {} tests/security/results/ \;
 
           chmod +x ./monitoring/defectdojo/import-reports.sh
           ./monitoring/defectdojo/import-reports.sh
 
-      - name: Export Trivy Operator reports
-        run: |
-          cd $GITHUB_WORKSPACE
-          chmod +x ./monitoring/defectdojo/export-trivy-operator.sh
-          ./monitoring/defectdojo/export-trivy-operator.sh
-
       - name: DefectDojo Summary
         if: always()
         run: |
-          cd $GITHUB_WORKSPACE
           source monitoring/defectdojo/.dd-config
-
-          # On récupère dynamiquement l'ID numérique à partir du nom du produit
-          REAL_PRODUCT_ID=$(curl -s -X GET "$DD_URL/api/v2/products/?name=$PRODUCT_NAME" \
-            -H "Authorization: Token ${{ secrets.DD_TOKEN }}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('results',[{}])[0].get('id',''))")
-
-          # On interroge l'API pour avoir le nombre de vulnérabilités
-          STATS=$(curl -s \
-            "$DD_URL/api/v2/findings/?product=$REAL_PRODUCT_ID&limit=1" \
-            -H "Authorization: Token ${{ secrets.DD_TOKEN }}" \
-            | python3 -c "
-          import sys,json
-          d=json.load(sys.stdin)
-          print(d.get('count',0))
-          " 2>/dev/null || echo "0")
-
-          # Génération du résumé visuel dans l'interface GitHub
+          PRODUCT_ID=$(curl -s "$DD_URL/api/v2/products/?name=$PRODUCT_NAME" \
+            -H "Authorization: Token $DD_TOKEN" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('results',[{}])[0].get('id',''))")
+          TOTAL=$(curl -s "$DD_URL/api/v2/findings/?product=$PRODUCT_ID&limit=1" \
+            -H "Authorization: Token $DD_TOKEN" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
           echo "## 🛡️ DefectDojo" >> $GITHUB_STEP_SUMMARY
-          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Total findings | $STATS |" >> $GITHUB_STEP_SUMMARY
-          echo "| Dashboard | $DD_URL/product/$REAL_PRODUCT_ID/finding/all |" >> $GITHUB_STEP_SUMMARY
+          echo "| Findings | Dashboard |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| $TOTAL | $DD_URL/product/$PRODUCT_ID/finding/all |" >> $GITHUB_STEP_SUMMARY

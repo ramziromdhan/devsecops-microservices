@@ -9,10 +9,10 @@ data:
     limit_req_zone $binary_remote_addr zone=api:10m rate=30r/m;
 
     server {
-        listen 80;
+        listen 8080;
         server_name _;
 
-        resolver kube-dns.kube-system.svc.cluster.local valid=5s ipv6=off;
+        resolver 172.30.0.10 valid=5s ipv6=off;
 
         limit_req zone=api burst=10 nodelay;
 
@@ -37,7 +37,7 @@ data:
 
         # Routes file-service Go (nouvelles routes)
         location /files/ {
-            set $file http://file-service.devsecops-prod.svc.cluster.local:8003;
+            set $file http://file-service-go.devsecops-prod.svc.cluster.local:8003;
             proxy_pass $file;
             proxy_set_header Authorization $http_authorization;
             proxy_set_header Host $host;
@@ -45,14 +45,14 @@ data:
         }
 
         location /share {
-            set $file http://file-service.devsecops-prod.svc.cluster.local:8003;
+            set $file http://file-service-go.devsecops-prod.svc.cluster.local:8003;
             proxy_pass $file;
             proxy_set_header Authorization $http_authorization;
             proxy_set_header Host $host;
         }
 
         location /download/ {
-            set $file http://file-service.devsecops-prod.svc.cluster.local:8003;
+            set $file http://file-service-go.devsecops-prod.svc.cluster.local:8003;
             proxy_pass $file;
             proxy_set_header Authorization $http_authorization;
             proxy_set_header Host $host;
@@ -60,7 +60,7 @@ data:
 
         # Route legacy upload (garde compatibilité)
         location /upload {
-            set $file http://file-service.devsecops-prod.svc.cluster.local:8003;
+            set $file http://file-service-go.devsecops-prod.svc.cluster.local:8003;
             proxy_pass $file;
             proxy_set_header Authorization $http_authorization;
             client_max_body_size 10m;

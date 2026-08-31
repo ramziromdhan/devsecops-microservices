@@ -24,12 +24,12 @@ spec:
               app: auth-db
       ports:
         - port: 5432
-    - to:                         # DNS
+    - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: openshift-dns
       ports:
-        - port: 53
+        - port: 5353
           protocol: UDP
-        - port: 53
+        - port: 5353
           protocol: TCP

@@ -16,8 +16,9 @@ spec:
         app: app-db
     spec:
       automountServiceAccountToken: false
-      securityContext:
-        fsGroup: 70
+      securityContext: {}
+      imagePullSecrets:
+        - name: redhat-registry-secret
       containers:
         - name: postgres
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -43,8 +44,7 @@ spec:
             failureThreshold: 3
           volumeMounts:
             - name: data
-              mountPath: /var/lib/postgresql/data
-              subPath: postgres
+              mountPath: /var/lib/pgsql/data
       volumes:
         - name: data
           persistentVolumeClaim:
