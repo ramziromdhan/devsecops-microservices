@@ -430,13 +430,9 @@ jobs:
                     command: ["kube-bench", "--benchmark", "rh-0.7"]
                     securityContext:
                       privileged: true
-                    volumeMounts:
-                      - name: var-lib-etcd
-                        mountPath: /var/lib/etcd
-                        readOnly: true
-                      - name: etc-kubernetes
-                        mountPath: /etc/kubernetes
-                        readOnly: true
+                      runAsNonRoot: true
+                      runAsUser: 10001
+                      allowPrivilegeEscalation: false
                 volumes:
                   - name: var-lib-etcd
                     hostPath:
