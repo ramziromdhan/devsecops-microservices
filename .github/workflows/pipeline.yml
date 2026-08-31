@@ -68,7 +68,7 @@ jobs:
           echo "| Semgrep | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| Gitleaks | ✅ |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 2 : Build matrix ─────────────────────────────────────
+  # ── Phase 2 : Build & push matrix ──────────────────────────────
   build:
     runs-on: self-hosted
     needs: sast
@@ -89,42 +89,32 @@ jobs:
             echo "image_name=${{ matrix.service }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build ${{ matrix.service }}
+      - name: Build, login and push ${{ matrix.service }}
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
         run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}"
+          AUTHFILE="$(mktemp)"
+
           podman build \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:${{ github.sha }} \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:latest \
+            -t "${IMAGE}:${{ github.sha }}" \
+            -t "${IMAGE}:latest" \
             ${{ steps.ctx.outputs.context }}
 
-  push:
-    runs-on: self-hosted
-    needs: build
-    strategy:
-      matrix:
-        service: [auth-service, app-service, file-service-go]  # Changed from file-service
-    steps:
-      - name: Resolve build context
-        id: ctx
-        run: |
-          if [ "${{ matrix.service }}" = "file-service-go" ]; then
-            echo "image_name=file-service" >> $GITHUB_OUTPUT
-          else
-            echo "image_name=${{ matrix.service }}" >> $GITHUB_OUTPUT
-          fi
+          echo "${QUAY_PASSWORD}" | podman login "${{ env.REGISTRY }}" \
+            -u "${QUAY_USERNAME}" --password-stdin --authfile "${AUTHFILE}" || \
+            { echo "❌ Quay.io login failed"; rm -f "${AUTHFILE}"; exit 1; }
 
-      - name: Login and push ${{ matrix.service }}
-        run: |
-          podman login -u "${{ secrets.QUAY_USERNAME }}" \
-            -p "${{ secrets.QUAY_PASSWORD }}" quay.io
-          podman login --get-login quay.io || \
-            { echo "❌ Quay.io login failed"; exit 1; }
-          podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:${{ github.sha }}
-          podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:latest
+          podman push --authfile "${AUTHFILE}" "${IMAGE}:${{ github.sha }}"
+          podman push --authfile "${AUTHFILE}" "${IMAGE}:latest"
+
+          rm -f "${AUTHFILE}"
 
   # ── Phase 4 : SCA — Hadolint + Trivy ────────────────────────────
   sca:
     runs-on: self-hosted
-    needs: push
+    needs: build
     strategy:
       matrix:
         service: [auth-service, app-service, file-service-go]
