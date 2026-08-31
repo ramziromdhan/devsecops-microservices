@@ -13,7 +13,7 @@ spec:
   - from:
     - podSelector:
         matchLabels:
-          app: file-service
+          app: file-service-go
     ports:
     - protocol: TCP
       port: 9000

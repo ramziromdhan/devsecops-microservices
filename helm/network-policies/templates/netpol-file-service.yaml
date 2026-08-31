@@ -6,7 +6,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: file-service
+      app: file-service-go
   policyTypes:
   - Ingress
   - Egress
@@ -22,12 +22,12 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: openshift-dns
       ports:
         - protocol: UDP
-          port: 53
+          port: 5353
         - protocol: TCP
-          port: 53
+          port: 5353
     - to:
         - podSelector:
             matchLabels:

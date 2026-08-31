@@ -28,15 +28,15 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: file-service
+              app: file-service-go
       ports:
         - port: 8003
-    - to:                         # DNS k3s
+    - to:                         
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: openshift-dns
       ports:
-        - port: 53
+        - port: 5353
           protocol: UDP
-        - port: 53
+        - port: 5353
           protocol: TCP

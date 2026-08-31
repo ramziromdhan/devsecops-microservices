@@ -1,0 +1,9 @@
+# Risque résiduel documenté — composant système Debian indissociable, aucun correctif amont disponible
+# Vérifié le 2026-08-29 — perl-base est une dépendance de dpkg/apt, sa suppression casse l'image
+CVE-2026-13221
+CVE-2026-42496
+CVE-2026-8376
+
+# Risque résiduel documenté — ecdsa déjà à la dernière version publiée (0.19.2), pas de fix amont
+# À réévaluer si une nouvelle version corrige la faille
+CVE-2024-23342  #la CVE ecdsa

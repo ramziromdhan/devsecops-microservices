@@ -30,3 +30,7 @@ tests/security/*-results.txt
 .env.test
 .dd-config
 cosign.key
+*.bundle
+*.crt
+trivy-report.txt
+cosign.key

@@ -6,7 +6,7 @@ source monitoring/defectdojo/.dd-config
 
 echo "========================================================"
 echo "  DefectDojo Import — $(date)"
-echo "  URL: $DD_URL | Product: $PRODUCT_ID"
+echo "  URL: $DD_URL | Product: $PRODUCT_NAME"
 echo "========================================================"
 
 IMPORTED=0
@@ -89,12 +89,29 @@ echo "  ✅ Importés : $IMPORTED"
 echo "  ❌ Échoués  : $FAILED"
 echo "========================================================"
 
-# Afficher le résumé des findings
-echo ""
-echo "--- Findings dans DefectDojo ---"
-curl -s "$DD_URL/api/v2/findings/?product=$PRODUCT_ID&limit=200" \
+# Récupération dynamique du PRODUCT_ID via l'API DefectDojo à partir du PRODUCT_NAME
+PRODUCT_ID=$(curl -s "$DD_URL/api/v2/products/?name=$(echo "$PRODUCT_NAME" | python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip()))')" \
     -H "Authorization: Token $DD_TOKEN" \
     | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    results = data.get('results', [])
+    if results:
+        print(results[0]['id'])
+    else:
+        print('')
+except Exception:
+    print('')
+")
+
+# Afficher le résumé des findings si l'ID a bien été trouvé
+if [ -n "$PRODUCT_ID" ]; then
+    echo ""
+    echo "--- Findings dans DefectDojo ---"
+    curl -s "$DD_URL/api/v2/findings/?product=$PRODUCT_ID&limit=200" \
+        -H "Authorization: Token $DD_TOKEN" \
+        | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 total = data.get('count', 0)
@@ -111,3 +128,6 @@ for sev in ['Critical', 'High', 'Medium', 'Low', 'Info']:
         symbol = {'Critical':'🔴', 'High':'🟠', 'Medium':'🟡', 'Low':'🔵', 'Info':'⚪'}.get(sev, '•')
         print(f'  {symbol} {sev}: {count}')
 "
+else
+    echo "⚠️ Impossible de récupérer le PRODUCT_ID pour afficher le résumé des findings."
+fi
