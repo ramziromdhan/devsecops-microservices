@@ -112,16 +112,12 @@ jobs:
             echo "image_name=${{ matrix.service }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Login Quay.io
+      - name: Login and push ${{ matrix.service }}
         run: |
           podman login -u "${{ secrets.QUAY_USERNAME }}" \
-           -p "${{ secrets.QUAY_PASSWORD }}" quay.io
-          # Verify login succeeded
+            -p "${{ secrets.QUAY_PASSWORD }}" quay.io
           podman login --get-login quay.io || \
             { echo "❌ Quay.io login failed"; exit 1; }
-
-      - name: Push ${{ matrix.service }}
-        run: |
           podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:${{ github.sha }}
           podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:latest
 
