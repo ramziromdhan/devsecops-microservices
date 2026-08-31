@@ -324,6 +324,13 @@ jobs:
             --from-literal=MINIO_BUCKET=uploads \
             --dry-run=client -o yaml | oc apply -f -
 
+          oc create secret docker-registry quay-registry-secret \
+            --namespace ${{ env.NAMESPACE }} \
+            --docker-server=${{ env.REGISTRY }} \
+            --docker-username="${{ secrets.QUAY_USERNAME }}" \
+            --docker-password="${{ secrets.QUAY_PASSWORD }}" \
+            --dry-run=client -o yaml | oc apply -f -
+
           oc create secret docker-registry redhat-registry-secret \
             --namespace devsecops-prod \
             --docker-server=registry.redhat.io \

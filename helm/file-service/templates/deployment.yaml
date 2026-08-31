@@ -16,6 +16,8 @@ spec:
         app: file-service-go
     spec:
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: quay-registry-secret
       securityContext:
         runAsNonRoot: true
         seccompProfile:
