@@ -68,7 +68,7 @@ jobs:
           echo "| Semgrep | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| Gitleaks | ✅ |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 2 : Build & push matrix ──────────────────────────────
+  # ── Phase 2 : Build & push vers Quay.io ───────────────────────
   build:
     runs-on: self-hosted
     needs: sast
@@ -95,23 +95,26 @@ jobs:
           QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}"
-          AUTHFILE="$(mktemp)"
 
           podman build \
             -t "${IMAGE}:${{ github.sha }}" \
             -t "${IMAGE}:latest" \
             ${{ steps.ctx.outputs.context }}
 
-          echo "${QUAY_PASSWORD}" | podman login "${{ env.REGISTRY }}" \
-            -u "${QUAY_USERNAME}" --password-stdin --authfile "${AUTHFILE}" || \
-            { echo "❌ Quay.io login failed"; rm -f "${AUTHFILE}"; exit 1; }
+          if [ "${{ github.event_name }}" = "push" ]; then
+            AUTHFILE="$(mktemp)"
+            echo "${QUAY_PASSWORD}" | podman login "${{ env.REGISTRY }}" \
+              -u "${QUAY_USERNAME}" --password-stdin --authfile "${AUTHFILE}" || \
+              { echo "❌ Quay.io login failed"; rm -f "${AUTHFILE}"; exit 1; }
 
-          podman push --authfile "${AUTHFILE}" "${IMAGE}:${{ github.sha }}"
-          podman push --authfile "${AUTHFILE}" "${IMAGE}:latest"
+            podman push --authfile "${AUTHFILE}" "${IMAGE}:${{ github.sha }}"
+            podman push --authfile "${AUTHFILE}" "${IMAGE}:latest"
+            rm -f "${AUTHFILE}"
+          else
+            echo "ℹ️ PR — build local uniquement, pas de push vers Quay"
+          fi
 
-          rm -f "${AUTHFILE}"
-
-  # ── Phase 4 : SCA — Hadolint + Trivy ────────────────────────────
+  # ── Phase 3 : SCA — Hadolint + Trivy ────────────────────────────
   sca:
     runs-on: self-hosted
     needs: build
@@ -171,40 +174,64 @@ jobs:
           name: sca-reports-${{ matrix.service }}-${{ github.sha }}
           path: tests/security/results/*.json
 
-  # ── Phase 5 : Cosign — Signature de l'image ─────────────────────
+  # ── Phase 4 : Cosign — Signature de l'image ─────────────────────
   sign:
     runs-on: self-hosted
     needs: sca
+    if: github.event_name == 'push'
     strategy:
       matrix:
-        service: [auth-service, app-service, file-service]
+        service: [auth-service, app-service, file-service-go]
     steps:
+      - name: Resolve image name
+        id: ctx
+        run: |
+          if [ "${{ matrix.service }}" = "file-service-go" ]; then
+            echo "image_name=file-service" >> $GITHUB_OUTPUT
+          else
+            echo "image_name=${{ matrix.service }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
       - name: Sign image on Quay
         env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:${{ github.sha }}"
+
           echo "$COSIGN_PRIVATE_KEY" > cosign.key
           cosign sign --key cosign.key --yes \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+            --registry-username "${QUAY_USERNAME}" \
+            --registry-password "${QUAY_PASSWORD}" \
+            "${IMAGE}"
+          rm -f cosign.key
 
       - name: Verify signature
         env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
           COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
         run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:${{ github.sha }}"
+
           echo "$COSIGN_PUBLIC_KEY" > cosign.pub
           cosign verify --key cosign.pub --insecure-ignore-tlog=true \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+            --registry-username "${QUAY_USERNAME}" \
+            --registry-password "${QUAY_PASSWORD}" \
+            "${IMAGE}"
+          rm -f cosign.pub
 
       - name: Sign Summary
         run: |
-          echo "## 🔏 Image Signing (Cosign) — ${{ matrix.service }}" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔏 Image Signing (Cosign) — ${{ steps.ctx.outputs.image_name }}" >> $GITHUB_STEP_SUMMARY
           echo "✅ Signée et vérifiée sur Quay.io" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 6 : IaC — Checkov + Kubesec ───────────────────────────
+  # ── Phase 5 : IaC — Checkov + Kubesec ───────────────────────────
   iac:
     runs-on: self-hosted
     needs: sast
@@ -215,7 +242,7 @@ jobs:
         uses: azure/setup-helm@v3
 
       - name: Checkov — all Helm charts
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@v12
         with:
           directory: helm/
           framework: helm
@@ -229,7 +256,7 @@ jobs:
             helm template $service ./helm/$service \
               --set image.pullPolicy=IfNotPresent > /tmp/${service}-rendered.yaml
 
-            SCORE=$(docker run -i kubesec/kubesec:v2 \
+            SCORE=$(podman run --rm -i kubesec/kubesec:v2 \
               scan /dev/stdin < /tmp/${service}-rendered.yaml \
               | python3 -c "
           import sys, json
@@ -254,10 +281,11 @@ jobs:
             echo "| $s | ✅ |" >> $GITHUB_STEP_SUMMARY
           done
 
-  # ── Phase 7 : Deploy sur OpenShift SNO ──────────────────────────
+  # ── Phase 6 : Deploy sur OpenShift SNO ──────────────────────────
   deploy:
     runs-on: self-hosted
     needs: [iac, sign]
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 
@@ -274,9 +302,6 @@ jobs:
         run: |
           oc new-project devsecops-prod 2>/dev/null || true
 
-          # Secrets stables : créés depuis GitHub Secrets fixes, jamais régénérés
-          # aléatoirement à chaque run — sinon les DB existantes deviennent
-          # inaccessibles avec un nouveau mot de passe.
           oc create secret generic auth-db-secret \
             --namespace devsecops-prod \
             --from-literal=POSTGRESQL_USER=authuser \
@@ -319,6 +344,13 @@ jobs:
             --docker-server=registry.redhat.io \
             --docker-username="${{ secrets.REDHAT_REGISTRY_USER }}" \
             --docker-password="${{ secrets.REDHAT_REGISTRY_PASS }}" \
+            --dry-run=client -o yaml | oc apply -f -
+
+          oc create secret docker-registry quay-registry-secret \
+            --namespace devsecops-prod \
+            --docker-server=${{ env.REGISTRY }} \
+            --docker-username="${{ secrets.QUAY_USERNAME }}" \
+            --docker-password="${{ secrets.QUAY_PASSWORD }}" \
             --dry-run=client -o yaml | oc apply -f -
 
       - name: Deploy databases first
@@ -379,10 +411,11 @@ jobs:
           fi
           echo "✅ All pods running"
 
-  # ── Phase 8 : Runtime audit (kube-bench) ────────────────────────
+  # ── Phase 7 : Runtime audit (kube-bench) ────────────────────────
   runtime:
     runs-on: self-hosted
     needs: deploy
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 
@@ -394,6 +427,7 @@ jobs:
 
       - name: kube-bench CIS OpenShift
         run: |
+          mkdir -p tests/security/results
           oc adm policy add-scc-to-user privileged -z default -n default
 
           oc apply -f - << 'EOF'
@@ -457,10 +491,11 @@ jobs:
           echo "|------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| $PASS | $FAIL |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 9 : Falco — démonstration runtime ─────────────────────
+  # ── Phase 8 : Falco — démonstration runtime ─────────────────────
   falco-test:
     runs-on: self-hosted
     needs: deploy
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 
@@ -511,11 +546,11 @@ jobs:
           echo "|------|----------|" >> $GITHUB_STEP_SUMMARY
           echo "| Shell in container (T1059) | ✅ |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 10 : DefectDojo Upload ────────────────────────────────
+  # ── Phase 9 : DefectDojo Upload ────────────────────────────────
   defectdojo-upload:
     runs-on: self-hosted
-    needs: [deploy, runtime, falco-test]
-    if: always()
+    needs: [sast, sca, deploy, runtime, falco-test]
+    if: always() && (needs.sast.result == 'success' || needs.sast.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
 
