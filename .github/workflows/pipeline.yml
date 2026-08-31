@@ -96,24 +96,32 @@ jobs:
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:latest \
             ${{ steps.ctx.outputs.context }}
 
-  # ── Phase 3 : Push vers Quay.io ─────────────────────────────────
   push:
-    runs-on: self-hosted
-    needs: build
-    strategy:
-      matrix:
-        service: [auth-service, app-service, file-service]
-    steps:
-      - name: Login Quay.io
-        run: |
-          podman login -u "${{ secrets.QUAY_USERNAME }}" \
-            -p "${{ secrets.QUAY_PASSWORD }}" quay.io
+   runs-on: self-hosted
+   needs: build
+   strategy:
+     matrix:
+       service: [auth-service, app-service, file-service]
+   steps:
+     - name: Login Quay.io
+       run: |
+         podman login -u "${{ secrets.QUAY_USERNAME }}" \
+           -p "${{ secrets.QUAY_PASSWORD }}" quay.io
+         # Verify login succeeded
+         podman login --get-login quay.io || \
+           { echo "❌ Quay.io login failed"; exit 1; }
 
-      - name: Push ${{ matrix.service }}
-        run: |
-          podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
-          podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest
-
+     - name: Push ${{ matrix.service }}
+       run: |
+         podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+         podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest
+            
+     - name: Debug Quay Login
+       run: |
+         echo "Registry: ${{ env.REGISTRY }}"
+         echo "Image Prefix: ${{ env.IMAGE_PREFIX }}"
+         podman images | grep "${{ env.IMAGE_PREFIX }}"
+         
   # ── Phase 4 : SCA — Hadolint + Trivy ────────────────────────────
   sca:
     runs-on: self-hosted
