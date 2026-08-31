@@ -411,14 +411,12 @@ jobs:
 
       - name: kube-bench CIS OpenShift
         run: |
-          oc adm policy add-scc-to-user privileged -z default -n default
-
           oc apply -f - << 'EOF'
           apiVersion: batch/v1
           kind: Job
           metadata:
             name: kube-bench
-            namespace: default
+            namespace: devsecops-prod
           spec:
             template:
               spec:
@@ -448,14 +446,14 @@ jobs:
                       path: /etc/kubernetes
           EOF
 
-          oc wait --for=condition=complete job/kube-bench --timeout=180s || true
-          oc logs job/kube-bench | tee tests/security/results/kube-bench-report.txt
+          oc wait --for=condition=complete job/kube-bench -n devsecops-prod --timeout=180s || true
+          oc logs job/kube-bench -n devsecops-prod | tee tests/security/results/kube-bench-report.txt
 
           PASS=$(grep -c "^\[PASS\]" tests/security/results/kube-bench-report.txt || echo "0")
           FAIL=$(grep -c "^\[FAIL\]" tests/security/results/kube-bench-report.txt || echo "0")
           echo "kube-bench: $PASS PASS, $FAIL FAIL"
 
-          oc delete job kube-bench 2>/dev/null || true
+          oc delete job kube-bench -n devsecops-prod 2>/dev/null || true
 
       - name: Upload runtime reports
         if: always()
