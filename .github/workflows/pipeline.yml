@@ -97,31 +97,34 @@ jobs:
             ${{ steps.ctx.outputs.context }}
 
   push:
-   runs-on: self-hosted
-   needs: build
-   strategy:
-     matrix:
-       service: [auth-service, app-service, file-service]
-   steps:
-     - name: Login Quay.io
-       run: |
-         podman login -u "${{ secrets.QUAY_USERNAME }}" \
-           -p "${{ secrets.QUAY_PASSWORD }}" quay.io
-         # Verify login succeeded
-         podman login --get-login quay.io || \
-           { echo "❌ Quay.io login failed"; exit 1; }
+    runs-on: self-hosted
+    needs: build
+    strategy:
+      matrix:
+        service: [auth-service, app-service, file-service-go]  # Changed from file-service
+    steps:
+      - name: Resolve build context
+        id: ctx
+        run: |
+          if [ "${{ matrix.service }}" = "file-service-go" ]; then
+            echo "image_name=file-service" >> $GITHUB_OUTPUT
+          else
+            echo "image_name=${{ matrix.service }}" >> $GITHUB_OUTPUT
+          fi
 
-     - name: Push ${{ matrix.service }}
-       run: |
-         podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
-         podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest
-            
-     - name: Debug Quay Login
-       run: |
-         echo "Registry: ${{ env.REGISTRY }}"
-         echo "Image Prefix: ${{ env.IMAGE_PREFIX }}"
-         podman images | grep "${{ env.IMAGE_PREFIX }}"
-         
+      - name: Login Quay.io
+        run: |
+          podman login -u "${{ secrets.QUAY_USERNAME }}" \
+           -p "${{ secrets.QUAY_PASSWORD }}" quay.io
+          # Verify login succeeded
+          podman login --get-login quay.io || \
+            { echo "❌ Quay.io login failed"; exit 1; }
+
+      - name: Push ${{ matrix.service }}
+        run: |
+          podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:${{ github.sha }}
+          podman push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ steps.ctx.outputs.image_name }}:latest
+
   # ── Phase 4 : SCA — Hadolint + Trivy ────────────────────────────
   sca:
     runs-on: self-hosted
