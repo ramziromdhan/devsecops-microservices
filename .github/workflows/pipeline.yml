@@ -396,9 +396,16 @@ jobs:
           fi
           echo "✅ All pods running"
 
-
+    # ── Phase 8 : kube-bench retiré de la pipeline automatisée ──────
+    # Audit CIS exécuté manuellement à la demande (hors CI/CD) :
+    # cf. section "Audit CIS manuel" dans le README pour la procédure
+    # et les résultats. Bloqué en pipeline par Kyverno require-non-root-user
+    # (kube-bench a structurellement besoin de root pour lire /etc/kubernetes
+    # et /var/lib/etcd sur le node) — non exigé par le cahier des charges,
+    # retiré pour ne pas bloquer les phases suivantes (Falco, DefectDojo).
 
   # ── Phase 9 : Falco — démonstration runtime ─────────────────────
+  
   falco-test:
     runs-on: self-hosted
     needs: deploy
