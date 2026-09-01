@@ -429,7 +429,9 @@ jobs:
                     image: aquasec/kube-bench:latest
                     command: ["kube-bench", "--benchmark", "rh-0.7"]
                     securityContext:
-                      privileged: true
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      allowPrivilegeEscalation: false
 
                 volumes:
                   - name: var-lib-etcd
