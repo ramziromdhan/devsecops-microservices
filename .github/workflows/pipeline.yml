@@ -200,6 +200,8 @@ jobs:
           echo "$COSIGN_PRIVATE_KEY" > cosign.key
           cosign sign --key cosign.key --yes \
             ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+          cosign sign --key cosign.key --yes \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest
 
       - name: Verify signature
         env:
@@ -208,11 +210,8 @@ jobs:
           echo "$COSIGN_PUBLIC_KEY" > cosign.pub
           cosign verify --key cosign.pub --insecure-ignore-tlog=true \
             ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
-
-      - name: Sign Summary
-        run: |
-          echo "## 🔏 Image Signing (Cosign) — ${{ matrix.service }}" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Signée et vérifiée sur Quay.io" >> $GITHUB_STEP_SUMMARY
+          cosign verify --key cosign.pub --insecure-ignore-tlog=true \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest
 
   # ── Phase 6 : IaC — Checkov + Kubesec ───────────────────────────
   iac:
@@ -405,7 +404,7 @@ jobs:
     # retiré pour ne pas bloquer les phases suivantes (Falco, DefectDojo).
 
   # ── Phase 9 : Falco — démonstration runtime ─────────────────────
-  
+
   falco-test:
     runs-on: self-hosted
     needs: deploy
