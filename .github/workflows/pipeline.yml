@@ -479,20 +479,28 @@ jobs:
       - name: Import to DefectDojo
         run: |
           source monitoring/defectdojo/.dd-config
-          curl -sf -H "Authorization: Token $DD_TOKEN" "$DD_URL/api/v2/" > /dev/null \
-            && echo "✅ DefectDojo accessible" \
-            || { echo "❌ DefectDojo non accessible"; exit 1; }
- 
+          if curl -sf -H "Authorization: Token $DD_TOKEN" "$DD_URL/api/v2/" > /dev/null; then
+            echo "✅ DefectDojo accessible"
+          else
+            echo "⚠️ DefectDojo non accessible — import skipped"
+            exit 0
+          fi
+
           mkdir -p tests/security/results/
           find /tmp/reports -name "*.json" -exec cp {} tests/security/results/ \;
- 
+
           chmod +x ./monitoring/defectdojo/import-reports.sh
           ./monitoring/defectdojo/import-reports.sh
- 
+
       - name: DefectDojo Summary
         if: always()
         run: |
           source monitoring/defectdojo/.dd-config
+          if ! curl -sf -H "Authorization: Token $DD_TOKEN" "$DD_URL/api/v2/" > /dev/null; then
+            echo "## 🛡️ DefectDojo" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ DefectDojo non accessible — résumé indisponible." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
           PRODUCT_ID=$(curl -s "$DD_URL/api/v2/products/?name=$PRODUCT_NAME" \
             -H "Authorization: Token $DD_TOKEN" \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('results',[{}])[0].get('id',''))")
