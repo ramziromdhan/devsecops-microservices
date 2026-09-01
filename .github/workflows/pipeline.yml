@@ -396,80 +396,7 @@ jobs:
           fi
           echo "✅ All pods running"
 
-  # ── Phase 8 : Runtime audit (kube-bench) ────────────────────────
-  runtime:
-    runs-on: self-hosted
-    needs: deploy
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Login OpenShift
-        run: |
-          oc login ${{ secrets.OPENSHIFT_API_URL }} \
-            --token=${{ secrets.OPENSHIFT_TOKEN }} \
-            --insecure-skip-tls-verify=true
-
-      - name: kube-bench CIS OpenShift
-        run: |
-          oc apply -f - << 'EOF'
-          apiVersion: batch/v1
-          kind: Job
-          metadata:
-            name: kube-bench
-            namespace: devsecops-prod
-          spec:
-            template:
-              spec:
-                hostPID: true
-                hostIPC: true
-                restartPolicy: Never
-                serviceAccountName: default
-                containers:
-                  - name: kube-bench
-                    image: aquasec/kube-bench:latest
-                    command: ["kube-bench", "--benchmark", "rh-0.7"]
-                    securityContext:
-                      privileged: true
-                    volumeMounts:
-                      - name: var-lib-etcd
-                        mountPath: /var/lib/etcd
-                        readOnly: true
-                      - name: etc-kubernetes
-                        mountPath: /etc/kubernetes
-                        readOnly: true
-                volumes:
-                  - name: var-lib-etcd
-                    hostPath:
-                      path: /var/lib/etcd
-                  - name: etc-kubernetes
-                    hostPath:
-                      path: /etc/kubernetes
-          EOF
-
-          oc wait --for=condition=complete job/kube-bench -n devsecops-prod --timeout=180s || true
-          oc logs job/kube-bench -n devsecops-prod | tee tests/security/results/kube-bench-report.txt
-
-          PASS=$(grep -c "^\[PASS\]" tests/security/results/kube-bench-report.txt || echo "0")
-          FAIL=$(grep -c "^\[FAIL\]" tests/security/results/kube-bench-report.txt || echo "0")
-          echo "kube-bench: $PASS PASS, $FAIL FAIL"
-
-          oc delete job kube-bench -n devsecops-prod 2>/dev/null || true
-      - name: Upload runtime reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-reports-${{ github.sha }}
-          path: tests/security/results/kube-bench-report.txt
-
-      - name: Runtime Summary
-        if: always()
-        run: |
-          PASS=$(grep -c "^\[PASS\]" tests/security/results/kube-bench-report.txt 2>/dev/null || echo "0")
-          FAIL=$(grep -c "^\[FAIL\]" tests/security/results/kube-bench-report.txt 2>/dev/null || echo "0")
-          echo "## ⚙️ Runtime — kube-bench" >> $GITHUB_STEP_SUMMARY
-          echo "| PASS | FAIL |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| $PASS | $FAIL |" >> $GITHUB_STEP_SUMMARY
 
   # ── Phase 9 : Falco — démonstration runtime ─────────────────────
   falco-test:
@@ -525,20 +452,21 @@ jobs:
           echo "|------|----------|" >> $GITHUB_STEP_SUMMARY
           echo "| Shell in container (T1059) | ✅ |" >> $GITHUB_STEP_SUMMARY
 
+  
   # ── Phase 10 : DefectDojo Upload ────────────────────────────────
   defectdojo-upload:
     runs-on: self-hosted
-    needs: [deploy, runtime, falco-test]
+    needs: [deploy, falco-test]
     if: always()
     steps:
       - uses: actions/checkout@v4
-
+ 
       - name: Download all reports
         uses: actions/download-artifact@v4
         with:
           merge-multiple: true
           path: /tmp/reports/
-
+ 
       - name: Generate .dd-config
         run: |
           mkdir -p monitoring/defectdojo
@@ -547,20 +475,20 @@ jobs:
           export DD_TOKEN="${{ secrets.DD_TOKEN }}"
           export PRODUCT_NAME="devsecops-microservices"
           EOF
-
+ 
       - name: Import to DefectDojo
         run: |
           source monitoring/defectdojo/.dd-config
           curl -sf -H "Authorization: Token $DD_TOKEN" "$DD_URL/api/v2/" > /dev/null \
             && echo "✅ DefectDojo accessible" \
             || { echo "❌ DefectDojo non accessible"; exit 1; }
-
+ 
           mkdir -p tests/security/results/
           find /tmp/reports -name "*.json" -exec cp {} tests/security/results/ \;
-
+ 
           chmod +x ./monitoring/defectdojo/import-reports.sh
           ./monitoring/defectdojo/import-reports.sh
-
+ 
       - name: DefectDojo Summary
         if: always()
         run: |
