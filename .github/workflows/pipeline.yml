@@ -420,6 +420,10 @@ jobs:
           spec:
             template:
               spec:
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  fsGroup: 1000
                 hostPID: true
                 hostIPC: true
                 restartPolicy: Never
@@ -429,7 +433,7 @@ jobs:
                     image: aquasec/kube-bench:latest
                     command: ["kube-bench", "--benchmark", "rh-0.7"]
                     securityContext:
-                      privileged: true
+                      allowPrivilegeEscalation: false
 
                 volumes:
                   - name: var-lib-etcd
