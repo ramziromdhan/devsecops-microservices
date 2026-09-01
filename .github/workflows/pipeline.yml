@@ -548,9 +548,17 @@ jobs:
       - name: Import to DefectDojo
         run: |
           source monitoring/defectdojo/.dd-config
-          curl -sf -H "Authorization: Token $DD_TOKEN" "$DD_URL/api/v2/" > /dev/null \
-            && echo "✅ DefectDojo accessible" \
-            || { echo "❌ DefectDojo non accessible"; exit 1; }
+
+          if [ -z "$DD_URL" ] || [ -z "$DD_TOKEN" ]; then
+            echo "⚠️ DefectDojo credentials are not configured, skipping import."
+            exit 0
+          fi
+
+          if ! curl -sf -H "Authorization: Token $DD_TOKEN" "$DD_URL/api/v2/" > /dev/null; then
+            echo "⚠️ DefectDojo is not accessible, skipping import."
+            exit 0
+          fi
+          echo "✅ DefectDojo accessible"
 
           mkdir -p tests/security/results/
           find /tmp/reports -name "*.json" -exec cp {} tests/security/results/ \;
@@ -562,13 +570,28 @@ jobs:
         if: always()
         run: |
           source monitoring/defectdojo/.dd-config
-          PRODUCT_ID=$(curl -s "$DD_URL/api/v2/products/?name=$PRODUCT_NAME" \
+
+          if [ -z "$DD_URL" ] || [ -z "$DD_TOKEN" ]; then
+            echo "## 🛡️ DefectDojo" >> $GITHUB_STEP_SUMMARY
+            echo "DefectDojo credentials are not configured for this run." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          PRODUCT_ID=$(curl -sf "$DD_URL/api/v2/products/?name=$PRODUCT_NAME" \
             -H "Authorization: Token $DD_TOKEN" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin).get('results',[{}])[0].get('id',''))")
-          TOTAL=$(curl -s "$DD_URL/api/v2/findings/?product=$PRODUCT_ID&limit=1" \
-            -H "Authorization: Token $DD_TOKEN" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('results',[{}])[0].get('id',''))" 2>/dev/null) || PRODUCT_ID=""
+
+          if [ -n "$PRODUCT_ID" ]; then
+            TOTAL=$(curl -sf "$DD_URL/api/v2/findings/?product=$PRODUCT_ID&limit=1" \
+              -H "Authorization: Token $DD_TOKEN" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
+            DASHBOARD="$DD_URL/product/$PRODUCT_ID/finding/all"
+          else
+            TOTAL="N/A"
+            DASHBOARD="N/A"
+          fi
+
           echo "## 🛡️ DefectDojo" >> $GITHUB_STEP_SUMMARY
           echo "| Findings | Dashboard |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| $TOTAL | $DD_URL/product/$PRODUCT_ID/finding/all |" >> $GITHUB_STEP_SUMMARY
+          echo "| $TOTAL | $DASHBOARD |" >> $GITHUB_STEP_SUMMARY
