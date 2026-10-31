@@ -10,7 +10,7 @@ The project demonstrates:
 - Container image scanning, signing, and admission policies
 - Kubernetes network policies and RBAC
 - Prometheus metrics, Grafana dashboards, and security alerts
-- SAST, SCA, DAST, IaC, and DefectDojo reporting
+- SAST, SCA, security testing, IaC scanning, and DefectDojo reporting
 
 ## Architecture
 
@@ -74,7 +74,7 @@ flowchart TB
 | `gateway` | `8080` | NGINX routing, headers, and rate limiting |
 | MinIO | `9000`/`9001` | Object storage and console in Kubernetes |
 
-The Docker Compose stack builds `services/file-service`. The GitHub Actions and Helm workflows build and deploy `services/file-service-go` as the `file-service` image.
+The Docker Compose stack builds the legacy Python implementation in `services/file-service`. The GitHub Actions pipeline and the Helm/OpenShift deployment build and deploy the Go implementation in `services/file-service-go` as the `file-service` workload. These are two deployment profiles, not two file services deployed simultaneously.
 
 ## Prerequisites
 
@@ -187,7 +187,7 @@ All protected endpoints require a bearer token. Health endpoints are available a
 
 ## Kubernetes deployment with Helm
 
-The charts are independent so they can be installed, upgraded, or removed separately. The following example uses the `devsecops-prod` namespace:
+The charts are independently released, but the current templates use the `devsecops-prod` namespace in resource metadata and service discovery. Use that namespace unless you first make the charts namespace-agnostic.
 
 ```bash
 kubectl create namespace devsecops-prod
@@ -252,19 +252,22 @@ The workflow in `.github/workflows/pipeline.yml` runs for pushes and pull reques
 4. **SCA** — Hadolint, Trivy vulnerability scans, and SBOM generation
 5. **Signing** — Sign and verify images with Cosign
 6. **IaC validation** — Checkov and Kubernetes manifest scanning
-7. **Deployment and verification** — Deploy to the configured Kubernetes environment and run checks
+7. **Deployment and verification** — Deploy to the configured OpenShift SNO environment and verify workload readiness
+8. **Runtime validation and reporting** — Exercise Falco detection and optionally import reports into DefectDojo
+
+DAST is not currently a standalone job in the GitHub Actions workflow. The repository provides security-test scripts and a ZAP authentication hook for authorized testing; run those checks separately against a deployed environment or add them as a pipeline gate.
 
 Configure the required GitHub Actions secrets, including registry credentials, Cosign material, and cluster/deployment credentials, in the repository settings. Keep private keys out of workflow files and commits.
 
 ## Security testing
 
-The full Kubernetes security suite expects a running deployment, a configured `.env.test`, and the required security tools:
+The full security suite expects a running Kubernetes deployment, a configured `.env.test`, and the required security tools:
 
 ```bash
 ./tests/security/run-full-security-suite.sh
 ```
 
-The suite covers:
+The intended suite covers:
 
 - Invalid credentials and JWT enforcement
 - Per-user data isolation
@@ -273,7 +276,7 @@ The suite covers:
 - SQL injection checks with SQLMap
 - Gateway rate limiting
 
-Reports are written under `tests/security/results/` and are intentionally ignored by Git. Run individual checks, such as the SSRF test, only against systems you own or are authorized to assess.
+Reports are written under `tests/security/results/` and are intentionally ignored by Git. The current repository does not include the helper script `tests/security/test-upload-security.sh`, which is called by `run-full-security-suite.sh`; the full script therefore requires that helper to be restored or the upload phase to be disabled before it can run successfully. The available standalone SSRF test is `tests/security/test-ssrf.sh`. Run all active checks only against systems you own or are authorized to assess.
 
 ## Monitoring and reporting
 
@@ -281,8 +284,6 @@ Prometheus-compatible metrics are exposed by the services. Kubernetes monitoring
 
 - `servicemonitor-microservices.yaml` discovers monitored services
 - `alert-rules.yaml` defines authentication-failure, crash-loop, and service-down alerts
-
-The Grafana dashboard is in `monitoring/grafana/dashboards/microservices-security.json`.
 
 DefectDojo integration scripts are in `monitoring/defectdojo/`. Configure the local DefectDojo settings outside Git, then import generated Bandit, Semgrep, Trivy, and ZAP reports:
 
