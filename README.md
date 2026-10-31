@@ -14,24 +14,51 @@ The project demonstrates:
 
 ## Architecture
 
-```text
-                         +----------------------+
-                         |  NGINX API Gateway   |
-                         |  :8080 / NodePort    |
-                         +----------+-----------+
-                                    |
-              +---------------------+---------------------+
-              |                     |                     |
-       +------v------+       +------v------+       +------v------+
-       | Auth Service|       | App Service |       | File Service|
-       | FastAPI     |       | FastAPI     |       | Python/Go   |
-       | :8001       |       | :8002       |       | :8003       |
-       +------+------+       +------+------+       +------+------+
-              |                     |                     |
-       +------v------+       +------v------+       +------v------+
-       | Auth DB     |       | App DB      |       | MinIO       |
-       | PostgreSQL  |       | PostgreSQL  |       | (Kubernetes)|
-       +-------------+       +-------------+       +-------------+
+```mermaid
+flowchart TB
+  user([Utilisateur])
+
+  subgraph CI["CI/CD · GitHub Actions · runner self-hosted"]
+    sast["SAST<br/>Gitleaks · Semgrep · Bandit"] --> build["Build<br/>podman"]
+    build --> sca["SCA<br/>Hadolint · Trivy"]
+    sca --> sign["Signature<br/>Cosign"]
+    sign --> iac["IaC<br/>Checkov · Kubesec"]
+  end
+
+  quay[("Quay.io<br/>registre d'images")]
+  dd["DefectDojo<br/>centralisation des findings"]
+
+  subgraph OCP["OpenShift SNO sur Proxmox"]
+    route["Route OpenShift"]
+    kyverno["Kyverno<br/>contrôle d'admission"]
+    falco["Falco<br/>détection runtime"]
+
+    subgraph NS["namespace devsecops-prod"]
+      gw["NGINX API Gateway<br/>rate limiting · security headers"]
+      auth["auth-service<br/>FastAPI · JWT"]
+      app["app-service<br/>FastAPI · CRUD"]
+      file["file-service<br/>Go · presigned URL · SHA256"]
+      authdb[("auth-db<br/>PostgreSQL")]
+      appdb[("app-db<br/>PostgreSQL")]
+      minio[("MinIO<br/>stockage S3")]
+    end
+  end
+
+  user --> route --> gw
+  gw --> auth
+  gw --> app
+  gw --> file
+  auth --> authdb
+  app --> appdb
+  file --> appdb
+  file --> minio
+
+  sign -->|push image signée| quay
+  iac -->|helm upgrade| kyverno
+  quay -.->|pull| kyverno
+  kyverno -->|admission| NS
+  falco -.->|surveille| NS
+  CI -.->|rapports JSON| dd
 ```
 
 ### Services
