@@ -337,6 +337,14 @@ jobs:
             --docker-password="${{ secrets.REDHAT_REGISTRY_PASS }}" \
             --dry-run=client -o yaml | oc apply -f -
 
+          kubectl create secret generic file-service-go-secret \
+            --namespace devsecops-prod \
+            --from-literal=MINIO_ENDPOINT=minio:9000 \
+            --from-literal=MINIO_ACCESS_KEY=minioadmin \
+            --from-literal=MINIO_SECRET_KEY=minioadmin \
+            --from-literal=MINIO_BUCKET=uploads \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Deploy databases first
         run: |
           helm upgrade --install auth-db ./helm/auth-db --namespace devsecops-prod --wait --timeout 180s
